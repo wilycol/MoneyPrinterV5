@@ -1,5 +1,5 @@
 import path from "path";
-import { mkdir, readdir, unlink } from "node:fs/promises";
+import { mkdir, readdir, stat, unlink } from "node:fs/promises";
 import Elysia, { t } from "elysia";
 import { AssemblyAI } from "assemblyai";
 import { randomUUIDv7 } from "bun";
@@ -25,6 +25,8 @@ type VoiceOption = {
     gender?: "Male" | "Female";
     provider: "edge-tts";
 };
+
+type SubtitlePosition = "bottom" | "center" | "top" | "custom";
 
 const EDGE_TTS_VOICES: VoiceOption[] = [
     { id: "es-ES-AlvaroNeural", label: "Español (ES) - Álvaro", locale: "es-ES", gender: "Male", provider: "edge-tts" },
@@ -73,6 +75,14 @@ export type Metadata = {
     imagesPrompts: string[];
     title: string;
     description: string;
+    subtitleFont: string;
+    subtitleFontSize: number;
+    subtitleColor: string;
+    subtitleStrokeColor: string;
+    subtitleStrokeWidth: number;
+    subtitlePosition: SubtitlePosition;
+    subtitlePositionY: number;
+    subtitleMaxChars: number;
 };
 
 const defaultMetdata: Metadata = {
@@ -92,6 +102,14 @@ const defaultMetdata: Metadata = {
     imagesPrompts: [],
     title: "",
     description: "",
+    subtitleFont: "badabb.ttf",
+    subtitleFontSize: 100,
+    subtitleColor: "#FFFF00",
+    subtitleStrokeColor: "black",
+    subtitleStrokeWidth: 5,
+    subtitlePosition: "center",
+    subtitlePositionY: 0.85,
+    subtitleMaxChars: 18,
 };
 
 const readMetadata = async (videoId: string) => {
@@ -147,6 +165,20 @@ const updateMetadata = async (videoId: string, metadata: Partial<Metadata>) => {
 export const projectRoutes = new Elysia({
     prefix: "/project",
 })
+    .get("/fonts", async () => {
+        try {
+            const fontsPath = path.join(process.cwd(), "fonts");
+            const files = await readdir(fontsPath, { withFileTypes: true });
+            const allowedExt = new Set([".ttf", ".otf", ".ttc"]);
+            return files
+                .filter((d) => d.isFile())
+                .map((d) => d.name)
+                .filter((name) => allowedExt.has(path.extname(name).toLowerCase()));
+        } catch (e) {
+            console.error("Failed to list fonts", e);
+            return [];
+        }
+    })
     .get(
         "/voices",
         ({ query }) => {
@@ -219,6 +251,32 @@ export const projectRoutes = new Elysia({
                     status: 500,
                     headers: { "Content-Type": "application/json" },
                 });
+            }
+
+            try {
+                const entries = await readdir(previewDir, { withFileTypes: true });
+                const mp3Files = entries
+                    .filter((e) => e.isFile() && e.name.toLowerCase().endsWith(".mp3"))
+                    .map((e) => e.name);
+
+                const fileStats = await Promise.all(
+                    mp3Files.map(async (name) => {
+                        const fullPath = path.join(previewDir, name);
+                        const s = await stat(fullPath);
+                        return { name, mtimeMs: s.mtimeMs };
+                    })
+                );
+
+                fileStats.sort((a, b) => b.mtimeMs - a.mtimeMs);
+                const toDelete = fileStats.slice(10);
+                await Promise.all(
+                    toDelete.map(async (f) => {
+                        const fullPath = path.join(previewDir, f.name);
+                        await unlink(fullPath).catch(() => undefined);
+                    })
+                );
+            } catch (e) {
+                console.warn("Preview cleanup failed:", e);
             }
 
             return { fileName, voice };
@@ -307,6 +365,47 @@ export const projectRoutes = new Elysia({
         {
             body: t.Object({
                 faceClip: t.String(),
+            }),
+        }
+    )
+    .post(
+        "/:id/subtitles",
+        async ({ params: { id }, body }) => {
+            try {
+                await updateMetadata(id, {
+                    subtitleFont: body.subtitleFont,
+                    subtitleFontSize: body.subtitleFontSize,
+                    subtitleColor: body.subtitleColor,
+                    subtitleStrokeColor: body.subtitleStrokeColor,
+                    subtitleStrokeWidth: body.subtitleStrokeWidth,
+                    subtitlePosition: body.subtitlePosition,
+                    subtitlePositionY: body.subtitlePositionY,
+                    subtitleMaxChars: body.subtitleMaxChars,
+                });
+                return { success: true };
+            } catch (e) {
+                console.error("Error updating subtitle settings:", e);
+                return new Response(JSON.stringify({ error: "Update failed", details: String(e) }), {
+                    status: 500,
+                    headers: { "Content-Type": "application/json" },
+                });
+            }
+        },
+        {
+            body: t.Object({
+                subtitleFont: t.String(),
+                subtitleFontSize: t.Number(),
+                subtitleColor: t.String(),
+                subtitleStrokeColor: t.String(),
+                subtitleStrokeWidth: t.Number(),
+                subtitlePosition: t.Union([
+                    t.Literal("bottom"),
+                    t.Literal("center"),
+                    t.Literal("top"),
+                    t.Literal("custom"),
+                ]),
+                subtitlePositionY: t.Number(),
+                subtitleMaxChars: t.Number(),
             }),
         }
     )
@@ -486,6 +585,14 @@ export const projectRoutes = new Elysia({
                     env: {
                         ...process.env,
                         FACE_CLIP: metadata.faceClip || "therock.mp4",
+                        SUBTITLE_FONT: metadata.subtitleFont || "badabb.ttf",
+                        SUBTITLE_FONT_SIZE: String(metadata.subtitleFontSize ?? 100),
+                        SUBTITLE_COLOR: metadata.subtitleColor || "#FFFF00",
+                        SUBTITLE_STROKE_COLOR: metadata.subtitleStrokeColor || "black",
+                        SUBTITLE_STROKE_WIDTH: String(metadata.subtitleStrokeWidth ?? 5),
+                        SUBTITLE_POSITION: metadata.subtitlePosition || "center",
+                        SUBTITLE_POSITION_Y: String(metadata.subtitlePositionY ?? 0.85),
+                        SUBTITLE_MAX_CHARS: String(metadata.subtitleMaxChars ?? 18),
                     },
                 }
             );

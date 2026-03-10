@@ -55,6 +55,8 @@ type VoiceOption = {
     provider: "edge-tts";
 };
 
+type SubtitlePosition = "bottom" | "center" | "top" | "custom";
+
 const joinUrl = (base: string, pathname: string) => {
     const cleanedBase = base.replace(/\/+$/, "");
     const cleanedPath = pathname.startsWith("/") ? pathname : `/${pathname}`;
@@ -131,6 +133,15 @@ const CreateVideo = ({ onStatusChange: setStatusMessage }: CreateVideoProps) => 
     const [voiceRate, setVoiceRate] = useState<number>(1.0);
     const [voicePreviewFile, setVoicePreviewFile] = useState<string>("");
     const [voicePreviewLoading, setVoicePreviewLoading] = useState<boolean>(false);
+    const [fontOptions, setFontOptions] = useState<string[]>([]);
+    const [subtitleFont, setSubtitleFont] = useState<string>("badabb.ttf");
+    const [subtitleFontSize, setSubtitleFontSize] = useState<number>(100);
+    const [subtitleColor, setSubtitleColor] = useState<string>("#FFFF00");
+    const [subtitleStrokeColor, setSubtitleStrokeColor] = useState<string>("#000000");
+    const [subtitleStrokeWidth, setSubtitleStrokeWidth] = useState<number>(5);
+    const [subtitlePosition, setSubtitlePosition] = useState<SubtitlePosition>("center");
+    const [subtitlePositionY, setSubtitlePositionY] = useState<number>(0.85);
+    const [subtitleMaxChars, setSubtitleMaxChars] = useState<number>(18);
     const [errorMessage, setErrorMessage] = useState<string>("");
     
     // Estados para contexto adicional
@@ -210,6 +221,21 @@ const CreateVideo = ({ onStatusChange: setStatusMessage }: CreateVideoProps) => 
     useEffect(() => {
         fetchVoices();
     }, [fetchVoices]);
+
+    const fetchFonts = useCallback(async () => {
+        try {
+            const res = await fetch(joinUrl(apiBaseUrl, "/project/fonts"));
+            if (!res.ok) return;
+            const data = (await res.json()) as unknown;
+            if (Array.isArray(data)) setFontOptions(data as string[]);
+        } catch (e) {
+            console.error("Failed to fetch fonts", e);
+        }
+    }, [apiBaseUrl]);
+
+    useEffect(() => {
+        fetchFonts();
+    }, [fetchFonts]);
 
     const saveFaceClip = async (nextFaceClip: string) => {
         try {
@@ -301,6 +327,41 @@ const CreateVideo = ({ onStatusChange: setStatusMessage }: CreateVideoProps) => 
             setVoicePreviewLoading(false);
         }
     }, [apiBaseUrl, script, topic, voiceId, voiceRate]);
+
+    const saveSubtitleSettings = useCallback(async () => {
+        const res = await fetch(joinUrl(apiBaseUrl, `/project/${videoId}/subtitles`), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                subtitleFont,
+                subtitleFontSize,
+                subtitleColor,
+                subtitleStrokeColor,
+                subtitleStrokeWidth,
+                subtitlePosition,
+                subtitlePositionY,
+                subtitleMaxChars,
+            }),
+        });
+
+        if (!res.ok) {
+            const err = await res.json().catch(() => null);
+            const details =
+                err && typeof err === "object" && "details" in err ? String((err as { details?: unknown }).details) : "";
+            throw new Error(details || "Failed to save subtitle settings");
+        }
+    }, [
+        apiBaseUrl,
+        videoId,
+        subtitleFont,
+        subtitleFontSize,
+        subtitleColor,
+        subtitleStrokeColor,
+        subtitleStrokeWidth,
+        subtitlePosition,
+        subtitlePositionY,
+        subtitleMaxChars,
+    ]);
 
     async function generateTopic() {
         setErrorMessage("");
@@ -506,6 +567,17 @@ const CreateVideo = ({ onStatusChange: setStatusMessage }: CreateVideoProps) => 
                     description: data.description,
                 });
                 setFaceClip(data.faceClip || "therock.mp4");
+                setSubtitleFont((data as unknown as { subtitleFont?: string }).subtitleFont || "badabb.ttf");
+                setSubtitleFontSize((data as unknown as { subtitleFontSize?: number }).subtitleFontSize ?? 100);
+                setSubtitleColor((data as unknown as { subtitleColor?: string }).subtitleColor || "#FFFF00");
+                const stroke = (data as unknown as { subtitleStrokeColor?: string }).subtitleStrokeColor;
+                setSubtitleStrokeColor(stroke && stroke.toLowerCase() !== "black" ? stroke : "#000000");
+                setSubtitleStrokeWidth((data as unknown as { subtitleStrokeWidth?: number }).subtitleStrokeWidth ?? 5);
+                setSubtitlePosition(
+                    ((data as unknown as { subtitlePosition?: SubtitlePosition }).subtitlePosition || "center") as SubtitlePosition
+                );
+                setSubtitlePositionY((data as unknown as { subtitlePositionY?: number }).subtitlePositionY ?? 0.85);
+                setSubtitleMaxChars((data as unknown as { subtitleMaxChars?: number }).subtitleMaxChars ?? 18);
                 
                 // Set initial expanded section based on progress
                 if (data.video) setExpandedSection(null);
@@ -566,6 +638,12 @@ const CreateVideo = ({ onStatusChange: setStatusMessage }: CreateVideoProps) => 
         setGenerating((prev) => ({ ...prev, video: true }));
         
         try {
+            try {
+                await saveSubtitleSettings();
+            } catch (e) {
+                console.error("Failed to save subtitle settings", e);
+            }
+
             const response = await API.project
                 .create({
                     id: videoId,
@@ -1168,6 +1246,126 @@ const CreateVideo = ({ onStatusChange: setStatusMessage }: CreateVideoProps) => 
                                         type="audio/mpeg"
                                     />
                                 </audio>
+                                <div className="mt-4 grid grid-cols-1 gap-3 rounded-md border border-slate-200 dark:border-slate-800 p-3 bg-slate-50 dark:bg-slate-900">
+                                    <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                                        Subtítulos
+                                    </div>
+
+                                    <div className="grid grid-cols-1 gap-2">
+                                        <label className="text-xs text-slate-500">Fuente</label>
+                                        <select
+                                            value={subtitleFont}
+                                            onChange={(e) => setSubtitleFont(e.target.value)}
+                                            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 dark:bg-slate-950 dark:border-slate-800"
+                                        >
+                                            <option value="badabb.ttf">badabb.ttf</option>
+                                            {fontOptions
+                                                .filter((f) => f !== "badabb.ttf")
+                                                .map((f) => (
+                                                    <option key={f} value={f}>
+                                                        {f}
+                                                    </option>
+                                                ))}
+                                        </select>
+                                    </div>
+
+                                    <div className="grid grid-cols-1 gap-2">
+                                        <label className="text-xs text-slate-500">
+                                            Tamaño ({subtitleFontSize}px)
+                                        </label>
+                                        <input
+                                            type="range"
+                                            min="20"
+                                            max="200"
+                                            step="5"
+                                            value={subtitleFontSize}
+                                            onChange={(e) => setSubtitleFontSize(Number(e.target.value))}
+                                            className="w-full"
+                                        />
+                                    </div>
+
+                                    <div className="grid grid-cols-2 gap-3">
+                                        <div className="grid grid-cols-1 gap-2">
+                                            <label className="text-xs text-slate-500">Color texto</label>
+                                            <input
+                                                type="color"
+                                                value={subtitleColor}
+                                                onChange={(e) => setSubtitleColor(e.target.value)}
+                                                className="h-9 w-full rounded-md border border-slate-200 dark:border-slate-800 bg-transparent"
+                                            />
+                                        </div>
+                                        <div className="grid grid-cols-1 gap-2">
+                                            <label className="text-xs text-slate-500">Color borde</label>
+                                            <input
+                                                type="color"
+                                                value={subtitleStrokeColor}
+                                                onChange={(e) => setSubtitleStrokeColor(e.target.value)}
+                                                className="h-9 w-full rounded-md border border-slate-200 dark:border-slate-800 bg-transparent"
+                                            />
+                                        </div>
+                                    </div>
+
+                                    <div className="grid grid-cols-1 gap-2">
+                                        <label className="text-xs text-slate-500">
+                                            Grosor borde ({subtitleStrokeWidth}px)
+                                        </label>
+                                        <input
+                                            type="range"
+                                            min="0"
+                                            max="12"
+                                            step="1"
+                                            value={subtitleStrokeWidth}
+                                            onChange={(e) => setSubtitleStrokeWidth(Number(e.target.value))}
+                                            className="w-full"
+                                        />
+                                    </div>
+
+                                    <div className="grid grid-cols-1 gap-2">
+                                        <label className="text-xs text-slate-500">Posición</label>
+                                        <select
+                                            value={subtitlePosition}
+                                            onChange={(e) => setSubtitlePosition(e.target.value as SubtitlePosition)}
+                                            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 dark:bg-slate-950 dark:border-slate-800"
+                                        >
+                                            <option value="bottom">Abajo</option>
+                                            <option value="center">Centro</option>
+                                            <option value="top">Arriba</option>
+                                            <option value="custom">Personalizado</option>
+                                        </select>
+                                    </div>
+
+                                    {subtitlePosition === "custom" ? (
+                                        <div className="grid grid-cols-1 gap-2">
+                                            <label className="text-xs text-slate-500">
+                                                Y ({Math.round(subtitlePositionY * 100)}%)
+                                            </label>
+                                            <input
+                                                type="range"
+                                                min="0"
+                                                max="100"
+                                                step="1"
+                                                value={Math.round(subtitlePositionY * 100)}
+                                                onChange={(e) => setSubtitlePositionY(Number(e.target.value) / 100)}
+                                                className="w-full"
+                                            />
+                                        </div>
+                                    ) : null}
+
+                                    <div className="grid grid-cols-1 gap-2">
+                                        <label className="text-xs text-slate-500">
+                                            Máx caracteres por línea ({subtitleMaxChars})
+                                        </label>
+                                        <input
+                                            type="range"
+                                            min="10"
+                                            max="40"
+                                            step="1"
+                                            value={subtitleMaxChars}
+                                            onChange={(e) => setSubtitleMaxChars(Number(e.target.value))}
+                                            className="w-full"
+                                        />
+                                    </div>
+                                </div>
                                 <div className="mt-4 flex gap-2">
                                     <Button loading={generating.video} onClick={generateVideo} className="flex-1">
                                         Generate video

@@ -32,6 +32,34 @@ import re
 from config import *
 from utils import choose_random_song
 
+def env_str(name, default):
+    v = os.environ.get(name)
+    if v is None:
+        return default
+    s = str(v).strip()
+    return s if s else default
+
+def env_int(name, default):
+    v = os.environ.get(name)
+    if v is None:
+        return default
+    try:
+        return int(float(v))
+    except Exception:
+        return default
+
+def env_float(name, default):
+    v = os.environ.get(name)
+    if v is None:
+        return default
+    try:
+        return float(v)
+    except Exception:
+        return default
+
+def clamp(x, lo, hi):
+    return max(lo, min(hi, x))
+
 def read_subtitles_utf8(filename):
     times_texts = []
     current_times = None
@@ -98,14 +126,26 @@ def combine() -> str:
         max_duration = tts_clip.duration
         req_dur = max_duration / len(images)
 
-        # Make a generator that returns a TextClip when called with consecutive
+        subtitle_font_name = env_str("SUBTITLE_FONT", "badabb.ttf")
+        subtitle_font_path = os.path.join(get_fonts_dir(), subtitle_font_name)
+        if not os.path.exists(subtitle_font_path):
+            subtitle_font_path = os.path.join(get_fonts_dir(), "badabb.ttf")
+
+        subtitle_font_size = clamp(env_int("SUBTITLE_FONT_SIZE", 100), 10, 300)
+        subtitle_color = env_str("SUBTITLE_COLOR", "#FFFF00")
+        subtitle_stroke_color = env_str("SUBTITLE_STROKE_COLOR", "black")
+        subtitle_stroke_width = clamp(env_int("SUBTITLE_STROKE_WIDTH", 5), 0, 20)
+        subtitle_position = env_str("SUBTITLE_POSITION", "center").lower()
+        subtitle_position_y = clamp(env_float("SUBTITLE_POSITION_Y", 0.85), 0.0, 1.0)
+        subtitle_max_chars = clamp(env_int("SUBTITLE_MAX_CHARS", 18), 5, 60)
+
         generator = lambda txt: TextClip(
             txt,
-            font=os.path.join(get_fonts_dir(), "badabb.ttf"),
-            fontsize=100,
-            color="#FFFF00",
-            stroke_color="black",
-            stroke_width=5,
+            font=subtitle_font_path,
+            fontsize=subtitle_font_size,
+            color=subtitle_color,
+            stroke_color=subtitle_stroke_color,
+            stroke_width=subtitle_stroke_width,
             size=(1080, 1920),
             method="caption",
         )
@@ -158,12 +198,19 @@ def combine() -> str:
 
         final_clip = concatenate_videoclips(clips)
         random_song = choose_random_song()
-        equalize_subtitles(subtitles_path, 10)
+        equalize_subtitles(subtitles_path, subtitle_max_chars)
         
         # Read subtitles with explicit UTF-8 encoding to support accents
         subs_data = read_subtitles_utf8(subtitles_path)
         subtitles = SubtitlesClip(subs_data, generator)
-        subtitles.set_pos(("center", "center"))
+        if subtitle_position == "bottom":
+            subtitles = subtitles.set_pos(("center", 0.85), relative=True)
+        elif subtitle_position == "top":
+            subtitles = subtitles.set_pos(("center", 0.05), relative=True)
+        elif subtitle_position == "custom":
+            subtitles = subtitles.set_pos(("center", subtitle_position_y), relative=True)
+        else:
+            subtitles = subtitles.set_pos(("center", "center"))
         random_song_clip = AudioFileClip(random_song).set_fps(44100)
 
         # Turn down volume
