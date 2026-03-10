@@ -47,6 +47,14 @@ type Generating = {
     [key in keyof typeof defaultGenerating]: boolean;
 };
 
+type VoiceOption = {
+    id: string;
+    label: string;
+    locale: string;
+    gender?: "Male" | "Female";
+    provider: "edge-tts";
+};
+
 const joinUrl = (base: string, pathname: string) => {
     const cleanedBase = base.replace(/\/+$/, "");
     const cleanedPath = pathname.startsWith("/") ? pathname : `/${pathname}`;
@@ -117,6 +125,12 @@ const CreateVideo = ({ onStatusChange: setStatusMessage }: CreateVideoProps) => 
     });
     const [faceClips, setFaceClips] = useState<string[]>([]);
     const [faceClip, setFaceClip] = useState<string>("therock.mp4");
+    const [voiceOptions, setVoiceOptions] = useState<VoiceOption[]>([]);
+    const [voiceDefaults, setVoiceDefaults] = useState<Record<string, string>>({});
+    const [voiceId, setVoiceId] = useState<string>("");
+    const [voiceRate, setVoiceRate] = useState<number>(1.0);
+    const [voicePreviewFile, setVoicePreviewFile] = useState<string>("");
+    const [voicePreviewLoading, setVoicePreviewLoading] = useState<boolean>(false);
     const [errorMessage, setErrorMessage] = useState<string>("");
     
     // Estados para contexto adicional
@@ -178,6 +192,25 @@ const CreateVideo = ({ onStatusChange: setStatusMessage }: CreateVideoProps) => 
         fetchFaceClips();
     }, [fetchFaceClips]);
 
+    const fetchVoices = useCallback(async () => {
+        try {
+            const res = await fetch(joinUrl(apiBaseUrl, "/project/voices"));
+            if (!res.ok) return;
+            const data = (await res.json()) as unknown;
+            if (!data || typeof data !== "object") return;
+            const voices = (data as { voices?: unknown }).voices;
+            const defaults = (data as { defaults?: unknown }).defaults;
+            if (Array.isArray(voices)) setVoiceOptions(voices as VoiceOption[]);
+            if (defaults && typeof defaults === "object") setVoiceDefaults(defaults as Record<string, string>);
+        } catch (e) {
+            console.error("Failed to fetch voices", e);
+        }
+    }, [apiBaseUrl]);
+
+    useEffect(() => {
+        fetchVoices();
+    }, [fetchVoices]);
+
     const saveFaceClip = async (nextFaceClip: string) => {
         try {
             setStatusMessage("Guardando face clip...");
@@ -210,6 +243,64 @@ const CreateVideo = ({ onStatusChange: setStatusMessage }: CreateVideoProps) => 
             prompts: prompts,
         },
     });
+
+    const selectedLanguage = form.watch("language");
+
+    useEffect(() => {
+        const defaultForLanguage = selectedLanguage ? voiceDefaults[selectedLanguage] : undefined;
+        if (!defaultForLanguage) return;
+
+        if (!voiceId) {
+            setVoiceId(defaultForLanguage);
+            return;
+        }
+
+        const stillValid = voiceOptions.some((v) => v.id === voiceId);
+        if (!stillValid) setVoiceId(defaultForLanguage);
+    }, [selectedLanguage, voiceDefaults, voiceId, voiceOptions]);
+
+    const previewVoice = useCallback(async () => {
+        if (!voiceId) return;
+        try {
+            setVoicePreviewLoading(true);
+            setErrorMessage("");
+
+            const previewText =
+                (script && script.trim().slice(0, 220)) ||
+                (topic && topic.trim()) ||
+                "Hola, esta es una prueba de voz para MoneyPrinterV5.";
+
+            const res = await fetch(joinUrl(apiBaseUrl, "/project/tts/preview"), {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    voice: voiceId,
+                    text: previewText,
+                    voiceRate,
+                }),
+            });
+
+            if (!res.ok) {
+                const err = await res.json().catch(() => null);
+                const details =
+                    err && typeof err === "object" && "details" in err ? String((err as { details?: unknown }).details) : "";
+                setErrorMessage(details ? `Error preview voz: ${details}` : "Error preview voz");
+                return;
+            }
+
+            const data = (await res.json()) as unknown;
+            const fileName =
+                data && typeof data === "object" && "fileName" in data && typeof (data as { fileName?: unknown }).fileName === "string"
+                    ? (data as { fileName: string }).fileName
+                    : "";
+            if (fileName) setVoicePreviewFile(fileName);
+        } catch (e) {
+            console.error("Preview voice failed", e);
+            setErrorMessage("Error preview voz");
+        } finally {
+            setVoicePreviewLoading(false);
+        }
+    }, [apiBaseUrl, script, topic, voiceId, voiceRate]);
 
     async function generateTopic() {
         setErrorMessage("");
@@ -324,6 +415,8 @@ const CreateVideo = ({ onStatusChange: setStatusMessage }: CreateVideoProps) => 
         const _audio = await API.project.create({ id: videoId }).sts.post({
             script: script,
             language: form.getValues().language,
+            voice: voiceId || undefined,
+            voiceRate,
         });
         setGenerating((prev) => ({ ...prev, audio: false }));
 
@@ -1002,6 +1095,66 @@ const CreateVideo = ({ onStatusChange: setStatusMessage }: CreateVideoProps) => 
                     onToggle={() => setExpandedSection(expandedSection === "audio" ? null : "audio")}
                     isCompleted={audio}
                 >
+                    <div className="mb-4 grid grid-cols-1 gap-3">
+                        <div className="grid grid-cols-1 gap-2">
+                            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Voz (Edge TTS)</label>
+                            <select
+                                value={voiceId}
+                                onChange={(e) => setVoiceId(e.target.value)}
+                                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 dark:bg-slate-950 dark:border-slate-800"
+                            >
+                                <option value="">Seleccionar voz...</option>
+                                {voiceOptions.map((v) => (
+                                    <option key={v.id} value={v.id}>
+                                        {v.label} ({v.id})
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-2">
+                            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                                Velocidad ({voiceRate.toFixed(2)}x)
+                            </label>
+                            <input
+                                type="range"
+                                min="0.8"
+                                max="1.5"
+                                step="0.05"
+                                value={voiceRate}
+                                onChange={(e) => setVoiceRate(Number(e.target.value))}
+                                className="w-full"
+                            />
+                            <div className="flex gap-2">
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    onClick={previewVoice}
+                                    disabled={!voiceId || voicePreviewLoading}
+                                    loading={voicePreviewLoading}
+                                >
+                                    Probar voz
+                                </Button>
+                                {voicePreviewFile ? (
+                                    <Button
+                                        type="button"
+                                        variant="ghost"
+                                        onClick={() => setVoicePreviewFile("")}
+                                    >
+                                        Limpiar preview
+                                    </Button>
+                                ) : null}
+                            </div>
+                            {voicePreviewFile ? (
+                                <audio controls className="w-full" key={voicePreviewFile}>
+                                    <source
+                                        src={joinUrl(apiBaseUrl, `/project/preview/audio/${voicePreviewFile}`)}
+                                        type="audio/mpeg"
+                                    />
+                                </audio>
+                            ) : null}
+                        </div>
+                    </div>
                     {
                         generating.audio ?
                         <div className="flex items-center gap-2 text-slate-500">

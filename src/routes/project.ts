@@ -18,6 +18,44 @@ const assemblyAi = new AssemblyAI({ apiKey: process.env.ASSEMBLY_AI_KEY || "" })
 
 const profile = process.env.FIREFOX_PROFILE;
 
+type VoiceOption = {
+    id: string;
+    label: string;
+    locale: string;
+    gender?: "Male" | "Female";
+    provider: "edge-tts";
+};
+
+const EDGE_TTS_VOICES: VoiceOption[] = [
+    { id: "es-ES-AlvaroNeural", label: "Español (ES) - Álvaro", locale: "es-ES", gender: "Male", provider: "edge-tts" },
+    { id: "es-ES-ElviraNeural", label: "Español (ES) - Elvira", locale: "es-ES", gender: "Female", provider: "edge-tts" },
+    { id: "en-US-ChristopherNeural", label: "English (US) - Christopher", locale: "en-US", gender: "Male", provider: "edge-tts" },
+    { id: "en-US-JennyNeural", label: "English (US) - Jenny", locale: "en-US", gender: "Female", provider: "edge-tts" },
+    { id: "fr-FR-DeniseNeural", label: "Français (FR) - Denise", locale: "fr-FR", gender: "Female", provider: "edge-tts" },
+    { id: "fr-FR-HenriNeural", label: "Français (FR) - Henri", locale: "fr-FR", gender: "Male", provider: "edge-tts" },
+    { id: "de-DE-KatjaNeural", label: "Deutsch (DE) - Katja", locale: "de-DE", gender: "Female", provider: "edge-tts" },
+    { id: "de-DE-ConradNeural", label: "Deutsch (DE) - Conrad", locale: "de-DE", gender: "Male", provider: "edge-tts" },
+    { id: "it-IT-DiegoNeural", label: "Italiano (IT) - Diego", locale: "it-IT", gender: "Male", provider: "edge-tts" },
+    { id: "it-IT-ElsaNeural", label: "Italiano (IT) - Elsa", locale: "it-IT", gender: "Female", provider: "edge-tts" },
+    { id: "pt-BR-FranciscaNeural", label: "Português (BR) - Francisca", locale: "pt-BR", gender: "Female", provider: "edge-tts" },
+    { id: "pt-BR-AntonioNeural", label: "Português (BR) - Antonio", locale: "pt-BR", gender: "Male", provider: "edge-tts" },
+    { id: "ru-RU-SvetlanaNeural", label: "Русский (RU) - Svetlana", locale: "ru-RU", gender: "Female", provider: "edge-tts" },
+    { id: "ja-JP-NanamiNeural", label: "日本語 (JP) - Nanami", locale: "ja-JP", gender: "Female", provider: "edge-tts" },
+    { id: "zh-CN-XiaoxiaoNeural", label: "中文 (CN) - Xiaoxiao", locale: "zh-CN", gender: "Female", provider: "edge-tts" },
+];
+
+const DEFAULT_VOICE_BY_LANGUAGE: Record<string, string> = {
+    english: "en-US-ChristopherNeural",
+    spanish: "es-ES-AlvaroNeural",
+    french: "fr-FR-DeniseNeural",
+    german: "de-DE-KatjaNeural",
+    italian: "it-IT-DiegoNeural",
+    portuguese: "pt-BR-FranciscaNeural",
+    russian: "ru-RU-SvetlanaNeural",
+    japanese: "ja-JP-NanamiNeural",
+    chinese: "zh-CN-XiaoxiaoNeural",
+};
+
 export type Metadata = {
     timestamp: number;
     argument: string;
@@ -109,6 +147,101 @@ const updateMetadata = async (videoId: string, metadata: Partial<Metadata>) => {
 export const projectRoutes = new Elysia({
     prefix: "/project",
 })
+    .get(
+        "/voices",
+        ({ query }) => {
+            const q = typeof query.q === "string" ? query.q.trim().toLowerCase() : "";
+            const language =
+                typeof query.language === "string" ? query.language.trim().toLowerCase() : "";
+
+            const filteredByLanguage = language
+                ? EDGE_TTS_VOICES.filter((v) => v.locale.toLowerCase().startsWith(language))
+                : EDGE_TTS_VOICES;
+
+            const filtered = q
+                ? filteredByLanguage.filter((v) => {
+                      const haystack = `${v.id} ${v.label} ${v.locale} ${v.gender ?? ""}`.toLowerCase();
+                      return haystack.includes(q);
+                  })
+                : filteredByLanguage;
+
+            return {
+                provider: "edge-tts",
+                voices: filtered,
+                defaults: DEFAULT_VOICE_BY_LANGUAGE,
+            };
+        },
+        {
+            query: t.Object({
+                q: t.Optional(t.String()),
+                language: t.Optional(t.String()),
+            }),
+        }
+    )
+    .post(
+        "/tts/preview",
+        async ({ body }) => {
+            const { text, voice, voiceRate } = body;
+
+            const previewDir = path.join(process.cwd(), "videos", "_preview");
+            await mkdir(previewDir, { recursive: true });
+
+            const fileName = `${randomUUIDv7()}.mp3`;
+            const outputPath = path.join(previewDir, fileName);
+
+            const previewText =
+                (text && text.trim()) ||
+                "Hola, esta es una prueba de voz para MoneyPrinterV5.";
+
+            const pythonPath = path.resolve(process.cwd(), "venv", "Scripts", "python.exe");
+            const scriptPath = path.resolve(process.cwd(), "python", "generate_free_tts.py");
+
+            const args = [pythonPath, scriptPath, previewText, outputPath, voice];
+            if (typeof voiceRate === "number" && Number.isFinite(voiceRate)) {
+                args.push(String(voiceRate));
+            }
+
+            const proc = Bun.spawn(args, {
+                cwd: process.cwd(),
+                stdout: "pipe",
+                stderr: "pipe",
+            });
+
+            const [stdoutStr, stderrStr] = await Promise.all([
+                new Response(proc.stdout).text(),
+                new Response(proc.stderr).text(),
+            ]);
+            await proc.exited;
+
+            if (proc.exitCode !== 0) {
+                const errorMsg = stderrStr || stdoutStr || "Unknown error";
+                return new Response(JSON.stringify({ error: "Preview TTS failed", details: errorMsg }), {
+                    status: 500,
+                    headers: { "Content-Type": "application/json" },
+                });
+            }
+
+            return { fileName, voice };
+        },
+        {
+            body: t.Object({
+                voice: t.String(),
+                text: t.Optional(t.String()),
+                voiceRate: t.Optional(t.Number()),
+            }),
+        }
+    )
+    .get("/preview/audio/:file", ({ params: { file } }) => {
+        const safeFile = path.basename(file);
+        if (safeFile !== file) {
+            return new Response(JSON.stringify({ error: "Invalid file" }), {
+                status: 400,
+                headers: { "Content-Type": "application/json" },
+            });
+        }
+        const audioPath = path.join(process.cwd(), "videos", "_preview", safeFile);
+        return Bun.file(audioPath);
+    })
     .get("/list-ids", async () => {
         const videosPath = path.join(process.cwd(), "videos");
         console.log("[DEBUG] /project/list called. Path:", videosPath);
@@ -502,7 +635,7 @@ export const projectRoutes = new Elysia({
 
     .post(
         "/create/:id/sts",
-        async ({ params: { id }, body: { script, language, voice } }) => {
+        async ({ params: { id }, body: { script, language, voice, voiceRate } }) => {
             // Limpiar script de caracteres extraños si es necesario
             // script = script.replaceAll("[^\\w\\s.?!]", ""); 
 
@@ -510,20 +643,11 @@ export const projectRoutes = new Elysia({
             const audioPath = path.join(__dirname, "../..", "videos", id, audioFileName);
             
             // Determinar idioma (simplificado, idealmente vendría del request)
-            const voices: Record<string, string> = {
-                "english": "en-US-ChristopherNeural",
-                "spanish": "es-ES-AlvaroNeural",
-                "french": "fr-FR-DeniseNeural",
-                "german": "de-DE-KatjaNeural",
-                "italian": "it-IT-DiegoNeural",
-                "portuguese": "pt-BR-FranciscaNeural",
-                "russian": "ru-RU-SvetlanaNeural",
-                "japanese": "ja-JP-NanamiNeural",
-                "chinese": "zh-CN-XiaoxiaoNeural",
-            };
-
             // Use provided voice, or fallback to language default, or default to Spanish Alvaro
-            const selectedVoice = voice || (language && voices[language.toLowerCase()]) || "es-ES-AlvaroNeural"; 
+            const selectedVoice =
+                voice ||
+                (language && DEFAULT_VOICE_BY_LANGUAGE[language.toLowerCase()]) ||
+                "es-ES-AlvaroNeural";
 
             try {
                 // Ensure directory exists
@@ -536,7 +660,18 @@ export const projectRoutes = new Elysia({
                 console.log(`Voice: ${selectedVoice}`);
 
                 // Ejecutar script de Python para TTS Gratuito
-                const proc = Bun.spawn(["./venv/Scripts/python.exe", "./python/generate_free_tts.py", script, audioPath, selectedVoice], {
+                const args = [
+                    "./venv/Scripts/python.exe",
+                    "./python/generate_free_tts.py",
+                    script,
+                    audioPath,
+                    selectedVoice,
+                ];
+                if (typeof voiceRate === "number" && Number.isFinite(voiceRate)) {
+                    args.push(String(voiceRate));
+                }
+
+                const proc = Bun.spawn(args, {
                     cwd: process.cwd(), // Ejecutar desde la raíz del proyecto
                     stdout: "pipe",
                     stderr: "pipe",

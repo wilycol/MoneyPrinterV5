@@ -37,6 +37,7 @@ export const createScriptToSpeech = t.Object({
     script: t.String(),
     language: t.Optional(t.String()),
     voice: t.Optional(t.String()),
+    voiceRate: t.Optional(t.Number()),
 });
 
 export type CreateVideo = Static<typeof createVideo>;
