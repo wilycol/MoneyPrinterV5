@@ -14,7 +14,7 @@ export const prompts = {
     ONLY RETURN THE RAW CONTENT OF THE SCRIPT. DO NOT INCLUDE "VOICEOVER", "NARRATOR" OR SIMILAR INDICATORS OF WHAT SHOULD BE SPOKEN AT THE BEGINNING OF EACH PARAGRAPH OR LINE. YOU MUST NOT MENTION THE PROMPT, OR ANYTHING ABOUT THE SCRIPT ITSELF. ALSO, NEVER TALK ABOUT THE AMOUNT OF PARAGRAPHS OR LINES. JUST WRITE THE SCRIPT
     topic: %TOPIC%
     Language: %LANGUAGE%`,
-    image: `Generate %IMAGES% Image Prompts for AI Image Generation,
+    image: `Generate EXACTLY %IMAGES% Image Prompts for AI Image Generation,
     depending on the topic of a video.
     topic: %TOPIC%
 
@@ -30,6 +30,7 @@ export const prompts = {
     YOU MUST ONLY RETURN THE JSON-ARRAY OF STRINGS.
     YOU MUST NOT RETURN ANYTHING ELSE. 
     YOU MUST NOT RETURN THE SCRIPT.
+    YOU MUST PROVIDE EXACTLY %IMAGES% ITEMS IN THE ARRAY.
     
     The search terms must be related to the topic of the video.
     Here is an example of a JSON-Array of strings:

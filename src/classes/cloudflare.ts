@@ -1,4 +1,4 @@
-import { fetch, file, randomUUIDv7, stringWidth } from "bun";
+import { fetch, randomUUIDv7 } from "bun";
 import path from "path";
 
 type CloudflareProps = {
@@ -14,16 +14,108 @@ class Cloudflare {
 
     public async generateResponse(prompt: string, json: boolean = false) {
         try {
-            const response = await fetch(
-                `${this.endpoint}/?type=text&prompt=${prompt}`
-            );
-            if (response.status === 200)
-                return json
-                    ? await response.json()
-                    : (await response.text()).replaceAll('"', "");
-            else return false;
+            // 1. Intentar leer la URL dinámica de Google Drive
+            let endpoint = this.endpoint;
+            const DRIVE_URL_FILE = "G:/Mi unidad/MoneyPrinterV5/ngrok_url.txt";
+            
+            try {
+                const driveUrl = await Bun.file(DRIVE_URL_FILE).text();
+                if (driveUrl && driveUrl.trim().startsWith("http")) {
+                    endpoint = driveUrl.trim();
+                }
+            } catch (e) {
+                // Si falla, seguimos usando this.endpoint (fallback)
+            }
+
+            // Usar Ollama API en lugar de Cloudflare Worker
+            try {
+                const response = await fetch(`${endpoint}/api/generate`, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "ngrok-skip-browser-warning": "69420", // Bypass ngrok warning
+                        "User-Agent": "MoneyPrinterV5-Backend/1.0",
+                        "Origin": endpoint
+                    },
+                    body: JSON.stringify({
+                        model: process.env.OLLAMA_MODEL || "llama3",
+                        prompt: prompt,
+                        stream: false,
+                        format: json ? "json" : undefined,
+                    }),
+                });
+
+                if (response.status === 200) {
+                    const data = await response.json();
+                    const text = data.response;
+
+                    if (json) {
+                        try {
+                            // A veces Ollama devuelve el JSON dentro del string 'response'
+                            return typeof text === "object" ? text : JSON.parse(text);
+                        } catch (e) {
+                            console.error("Error parsing JSON from Ollama:", e);
+                            return text;
+                        }
+                    }
+                    return text.replaceAll('"', "");
+                } else {
+                    throw new Error(`Ollama API Error: ${response.status}`);
+                }
+            } catch (ollamaError) {
+                console.warn("⚠️ Local Ollama failed, trying Groq fallback...", ollamaError);
+                return await this.callGroq(prompt, json);
+            }
         } catch (e) {
             console.error(e);
+            return false;
+        }
+    }
+
+    private async callGroq(prompt: string, json: boolean) {
+        const apiKey = process.env.GROQ_API_KEY;
+        if (!apiKey) {
+            console.error("❌ Groq API Key missing. Cannot use fallback.");
+            return false;
+        }
+
+        console.log("🔄 Switching to Groq API (Fallback)...");
+        
+        try {
+            const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+                method: "POST",
+                headers: {
+                    "Authorization": `Bearer ${apiKey}`,
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    messages: [{ role: "user", content: prompt }],
+                    model: process.env.GROQ_MODEL || "llama-3.3-70b-versatile",
+                    temperature: 0.7,
+                    response_format: json ? { type: "json_object" } : undefined 
+                })
+            });
+
+            if (response.status === 200) {
+                const data = await response.json();
+                const content = data.choices[0]?.message?.content;
+                
+                if (json) {
+                     try {
+                        return JSON.parse(content);
+                    } catch (e) {
+                        console.error("Error parsing JSON from Groq:", e);
+                        return content;
+                    }
+                }
+                return content.replaceAll('"', "");
+            } else {
+                 console.error("Groq API Error:", response.status, await response.text());
+                 return false;
+            }
+        } catch (e) {
+            console.error("Groq API Exception:", e);
+            return false;
         }
     }
 
@@ -126,6 +218,14 @@ class Cloudflare {
             ${script}`;
         let response = await this.generateResponse(prompt, true);
         if (response) {
+            // Fix for Groq/OpenAI wrapping arrays in objects
+            if (!Array.isArray(response) && typeof response === "object") {
+                const values = Object.values(response);
+                const arrayVal = values.find(v => Array.isArray(v));
+                if (arrayVal) {
+                    response = arrayVal;
+                }
+            }
             console.log(response);
             return response;
         } else {
@@ -134,18 +234,82 @@ class Cloudflare {
     }
 
     public async generateImage(prompt: string, videoId: string) {
+        // 1. Intentar con NVIDIA Stable Diffusion (Prioridad)
         try {
-            const response = await fetch(
-                `${this.endpoint}/?type=image&prompt=${prompt}`
-            );
+            const nvidiaKey = process.env.NVIDIA_API_KEY;
+            if (nvidiaKey) {
+                console.log("🎨 Trying NVIDIA Stable Diffusion...");
+                // Endpoint validado en pruebas: stable-diffusion-3-medium
+                const invokeUrl = "https://ai.api.nvidia.com/v1/genai/stabilityai/stable-diffusion-3-medium";
+                
+                const payload = {
+                    "prompt": prompt,
+                    "cfg_scale": 5,
+                    "aspect_ratio": "16:9",
+                    "output_format": "jpeg"
+                };
+
+                const response = await fetch(invokeUrl, {
+                    method: "POST",
+                    headers: {
+                        "Authorization": `Bearer ${nvidiaKey}`,
+                        "Accept": "application/json",
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                if (response.status === 200) {
+                    const data = await response.json();
+                    // La respuesta de NVIDIA es { "image": "base64..." } o { "artifacts": [...] } dependiendo del endpoint
+                    // Para stable-diffusion-3-medium suele ser "image": "base64string" en algunos endpoints de NVIDIA NIM,
+                    // pero la documentación estándar de stability dice artifacts.
+                    // Voy a verificar la respuesta del script de prueba si es posible, pero como no vi el body...
+                    // Asumiré formato estándar de NVIDIA NIM: { "image": "<base64_string>" } o { "artifacts": ... }
+                    // Mejor logueo y verifico ambas estructuras.
+                    
+                    let base64Image = null;
+                    if (data.image) {
+                        base64Image = data.image;
+                    } else if (data.artifacts && data.artifacts.length > 0) {
+                        base64Image = data.artifacts[0].base64;
+                    }
+
+                    if (base64Image) {
+                        const buffer = Buffer.from(base64Image, 'base64');
+                        const imageName = `${randomUUIDv7()}.jpg`; 
+                        const imagePath = path.join("./", "videos", videoId, imageName);
+                        await Bun.write(imagePath, new Uint8Array(buffer));
+                        console.log("✅ Image generated with NVIDIA");
+                        return imageName;
+                    } else {
+                         console.warn("⚠️ NVIDIA response format unexpected:", JSON.stringify(data).substring(0, 200));
+                    }
+                } else {
+                    console.warn(`⚠️ NVIDIA API failed with status ${response.status}. Falling back to Pollinations.`);
+                }
+            }
+        } catch (e) {
+            console.error("❌ NVIDIA Generation Error:", e);
+        }
+
+        // 2. Fallback a Pollinations.ai
+        try {
+            console.log("🎨 Generating with Pollinations (Fallback)...");
+            const encodedPrompt = encodeURIComponent(prompt);
+            const url = `https://image.pollinations.ai/prompt/${encodedPrompt}`;
+            
+            const response = await fetch(url);
+            
             if (
                 response.status === 200 &&
-                response.headers.get("content-type") === "image/png"
+                response.headers.get("content-type")?.includes("image")
             ) {
                 const blob = await response.blob();
-                const imageName = `${randomUUIDv7()}.png`;
+                // Pollinations suele devolver JPG, pero guardamos como PNG o mantenemos extensión
+                const imageName = `${randomUUIDv7()}.jpg`; 
                 const imagePath = path.join("./", "videos", videoId, imageName);
-                await Bun.write(file(imagePath), blob);
+                await Bun.write(imagePath, blob);
                 return imageName;
             } else return false;
         } catch (e) {

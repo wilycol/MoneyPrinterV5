@@ -23,5 +23,14 @@
         "noUnusedLocals": false,
         "noUnusedParameters": false,
         "noPropertyAccessFromIndexSignature": false
-    }
+    },
+    "include": ["index.ts", "src/**/*.ts"],
+    "exclude": [
+        "**/node_modules/**",
+        "venv/**",
+        "python/**",
+        "videos/**",
+        "frontend/**",
+        "beatriz-frontend/**"
+    ]
 }

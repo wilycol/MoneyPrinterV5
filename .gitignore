@@ -4,6 +4,12 @@ __pycache__
 
 # Based on https://raw.githubusercontent.com/github/gitignore/main/Node.gitignore
 
+# Local Environment & Secrets
+.env
+.env.local
+.env.*.local
+credenciales.md
+
 # Logs
 
 logs
@@ -177,3 +183,24 @@ dist
 
 # Finder (MacOS) folder config
 .DS_Store
+
+# Artefactos locales (no versionar)
+_tmp/
+temp_firefox_profile/
+MoneyPrinterTurbo-Extended-main.zip
+beatriz-frontend/
+
+# Medios y pruebas locales
+faces/
+*.mp3
+*.wav
+test_*.mp3
+test_*.wav
+prueba_*.mp3
+frontend/test_output.txt
+frontend/chat.html
+
+# Notas locales
+LTX_AI_text_to_video.md
+Plan de Migración_*.md
+test_selenium.py

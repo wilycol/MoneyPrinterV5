@@ -15,6 +15,8 @@ export const createVideo = t.Object({
 export const createTopic = t.Object({
     argument: t.String(),
     prompt: t.String(),
+    sourceUrl: t.Optional(t.String()),
+    contextText: t.Optional(t.String()),
 });
 
 export const createScript = t.Object({
@@ -33,6 +35,8 @@ export const createImagePrompts = t.Object({
 
 export const createScriptToSpeech = t.Object({
     script: t.String(),
+    language: t.Optional(t.String()),
+    voice: t.Optional(t.String()),
 });
 
 export type CreateVideo = Static<typeof createVideo>;

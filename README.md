@@ -1,4 +1,4 @@
-# MoneyPrinterV3
+# ARA Auto Publisher
 This version of MoneyPrinter (partially based on https://github.com/FujiwaraChoki/MoneyPrinterV2 by @FujiwaraChoki ) works using Bun instead of node, so if you're not using Bun yet, please install it first:
 
 ```bash
