@@ -57,6 +57,17 @@ def env_float(name, default):
     except Exception:
         return default
 
+def env_bool(name, default):
+    v = os.environ.get(name)
+    if v is None:
+        return default
+    s = str(v).strip().lower()
+    if s in ("1", "true", "yes", "y", "on"):
+        return True
+    if s in ("0", "false", "no", "n", "off"):
+        return False
+    return default
+
 def clamp(x, lo, hi):
     return max(lo, min(hi, x))
 
@@ -138,6 +149,7 @@ def combine() -> str:
         subtitle_position = env_str("SUBTITLE_POSITION", "center").lower()
         subtitle_position_y = clamp(env_float("SUBTITLE_POSITION_Y", 0.85), 0.0, 1.0)
         subtitle_max_chars = clamp(env_int("SUBTITLE_MAX_CHARS", 18), 5, 60)
+        subtitle_enabled = env_bool("SUBTITLE_ENABLED", True)
 
         generator = lambda txt: TextClip(
             txt,
@@ -198,19 +210,21 @@ def combine() -> str:
 
         final_clip = concatenate_videoclips(clips)
         random_song = choose_random_song()
-        equalize_subtitles(subtitles_path, subtitle_max_chars)
-        
-        # Read subtitles with explicit UTF-8 encoding to support accents
-        subs_data = read_subtitles_utf8(subtitles_path)
-        subtitles = SubtitlesClip(subs_data, generator)
-        if subtitle_position == "bottom":
-            subtitles = subtitles.set_pos(("center", 0.85), relative=True)
-        elif subtitle_position == "top":
-            subtitles = subtitles.set_pos(("center", 0.05), relative=True)
-        elif subtitle_position == "custom":
-            subtitles = subtitles.set_pos(("center", subtitle_position_y), relative=True)
-        else:
-            subtitles = subtitles.set_pos(("center", "center"))
+        subtitles = None
+        if subtitle_enabled and os.path.exists(subtitles_path):
+            equalize_subtitles(subtitles_path, subtitle_max_chars)
+            
+            # Read subtitles with explicit UTF-8 encoding to support accents
+            subs_data = read_subtitles_utf8(subtitles_path)
+            subtitles = SubtitlesClip(subs_data, generator)
+            if subtitle_position == "bottom":
+                subtitles = subtitles.set_pos(("center", 0.85), relative=True)
+            elif subtitle_position == "top":
+                subtitles = subtitles.set_pos(("center", 0.05), relative=True)
+            elif subtitle_position == "custom":
+                subtitles = subtitles.set_pos(("center", subtitle_position_y), relative=True)
+            else:
+                subtitles = subtitles.set_pos(("center", "center"))
         random_song_clip = AudioFileClip(random_song).set_fps(44100)
 
         # Turn down volume
@@ -237,7 +251,9 @@ def combine() -> str:
                 masked_clip = masked_clip.set_position(("left", "bottom"))
 
         # Compose final clip
-        clips_to_compose = [final_clip, subtitles]
+        clips_to_compose = [final_clip]
+        if subtitles is not None:
+            clips_to_compose.append(subtitles)
         if masked_clip is not None:
             clips_to_compose.insert(1, masked_clip)
         final_clip = CompositeVideoClip(clips_to_compose)

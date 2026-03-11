@@ -56,6 +56,7 @@ type VoiceOption = {
 };
 
 type SubtitlePosition = "bottom" | "center" | "top" | "custom";
+type KbVisionMode = "auto" | "off" | "force";
 
 const joinUrl = (base: string, pathname: string) => {
     const cleanedBase = base.replace(/\/+$/, "");
@@ -142,12 +143,21 @@ const CreateVideo = ({ onStatusChange: setStatusMessage }: CreateVideoProps) => 
     const [subtitlePosition, setSubtitlePosition] = useState<SubtitlePosition>("center");
     const [subtitlePositionY, setSubtitlePositionY] = useState<number>(0.85);
     const [subtitleMaxChars, setSubtitleMaxChars] = useState<number>(18);
+    const [subtitleEnabled, setSubtitleEnabled] = useState<boolean>(true);
+    const [ctaEnabled, setCtaEnabled] = useState<boolean>(false);
+    const [ctaUrl, setCtaUrl] = useState<string>("");
+    const [ctaText, setCtaText] = useState<string>("Abrir enlace");
     const [errorMessage, setErrorMessage] = useState<string>("");
     
     // Estados para contexto adicional
     const [sourceUrl, setSourceUrl] = useState<string>("");
     const [contextText, setContextText] = useState<string>("");
     const [showContextOptions, setShowContextOptions] = useState<boolean>(false);
+    const [kbAttachments, setKbAttachments] = useState<Metadata["kbAttachments"]>([]);
+    const [kbUploading, setKbUploading] = useState<boolean>(false);
+    const [kbVisionMode, setKbVisionMode] = useState<KbVisionMode>("auto");
+    const [kbVisionModelPreset, setKbVisionModelPreset] = useState<string>("auto");
+    const [kbVisionModelCustom, setKbVisionModelCustom] = useState<string>("");
 
     const apiBaseUrl =
         ((import.meta as unknown as { env?: Record<string, string | undefined> })?.env?.VITE_API_BASE_URL ||
@@ -333,6 +343,7 @@ const CreateVideo = ({ onStatusChange: setStatusMessage }: CreateVideoProps) => 
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
+                subtitleEnabled,
                 subtitleFont,
                 subtitleFontSize,
                 subtitleColor,
@@ -353,6 +364,7 @@ const CreateVideo = ({ onStatusChange: setStatusMessage }: CreateVideoProps) => 
     }, [
         apiBaseUrl,
         videoId,
+        subtitleEnabled,
         subtitleFont,
         subtitleFontSize,
         subtitleColor,
@@ -362,6 +374,25 @@ const CreateVideo = ({ onStatusChange: setStatusMessage }: CreateVideoProps) => 
         subtitlePositionY,
         subtitleMaxChars,
     ]);
+
+    const saveCtaSettings = useCallback(async () => {
+        const res = await fetch(joinUrl(apiBaseUrl, `/project/${videoId}/cta`), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                enabled: ctaEnabled,
+                url: ctaUrl,
+                text: ctaText,
+            }),
+        });
+
+        if (!res.ok) {
+            const err = await res.json().catch(() => null);
+            const details =
+                err && typeof err === "object" && "details" in err ? String((err as { details?: unknown }).details) : "";
+            throw new Error(details || "Failed to save CTA settings");
+        }
+    }, [apiBaseUrl, videoId, ctaEnabled, ctaUrl, ctaText]);
 
     async function generateTopic() {
         setErrorMessage("");
@@ -407,6 +438,8 @@ const CreateVideo = ({ onStatusChange: setStatusMessage }: CreateVideoProps) => 
                 prompt: values.prompts.script,
                 sentences: values.sentences.toString(),
                 topic: topic,
+                sourceUrl: sourceUrl || undefined,
+                contextText: contextText || undefined,
             });
 
         setGenerating((prev) => ({ ...prev, script: false }));
@@ -434,6 +467,8 @@ const CreateVideo = ({ onStatusChange: setStatusMessage }: CreateVideoProps) => 
                 prompt: values.prompts.image,
                 script: script,
                 topic: topic,
+                sourceUrl: sourceUrl || undefined,
+                contextText: contextText || undefined,
             });
         
         setGenerating((prev) => ({ ...prev, imagesPrompts: false }));
@@ -544,6 +579,50 @@ const CreateVideo = ({ onStatusChange: setStatusMessage }: CreateVideoProps) => 
         }
     };
 
+    const handleUploadKbFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        if (!e.target.files || e.target.files.length === 0) return;
+
+        const file = e.target.files[0];
+        const formData = new FormData();
+        formData.append("file", file);
+        formData.append("visionMode", kbVisionMode);
+        const model =
+            kbVisionModelPreset === "custom" ? kbVisionModelCustom.trim() : kbVisionModelPreset;
+        if (model) formData.append("visionModel", model);
+
+        try {
+            setKbUploading(true);
+            setStatusMessage("Uploading KB attachment...");
+            const res = await fetch(joinUrl(apiBaseUrl, `/project/${videoId}/kb/upload`), {
+                method: "POST",
+                body: formData,
+            });
+
+            if (!res.ok) {
+                const err = (await res.json().catch(() => null)) as unknown;
+                const details =
+                    err && typeof err === "object" && "details" in err ? String((err as { details?: unknown }).details) : "";
+                throw new Error(details || "Upload failed");
+            }
+
+            const data = (await res.json()) as unknown;
+            const attachment =
+                data && typeof data === "object" && "attachment" in data ? (data as { attachment?: unknown }).attachment : null;
+
+            if (attachment && typeof attachment === "object" && "id" in attachment) {
+                setKbAttachments((prev) => [...prev, attachment as Metadata["kbAttachments"][number]]);
+            }
+
+            setStatusMessage("KB attachment uploaded successfully");
+        } catch (e) {
+            console.error("Failed to upload KB attachment", e);
+            setErrorMessage("Failed to upload KB attachment");
+        } finally {
+            setKbUploading(false);
+            e.target.value = "";
+        }
+    };
+
     const fetchVideoData = useCallback(async () => {
         try {
             const response = await API.project({
@@ -562,6 +641,7 @@ const CreateVideo = ({ onStatusChange: setStatusMessage }: CreateVideoProps) => 
                 setImages(data.imagesPath);
                 setAudio(data.audio);
                 setVideo(data.video);
+                setKbAttachments(Array.isArray(data.kbAttachments) ? data.kbAttachments : []);
                 setMetadata({
                     title: data.title,
                     description: data.description,
@@ -578,6 +658,10 @@ const CreateVideo = ({ onStatusChange: setStatusMessage }: CreateVideoProps) => 
                 );
                 setSubtitlePositionY((data as unknown as { subtitlePositionY?: number }).subtitlePositionY ?? 0.85);
                 setSubtitleMaxChars((data as unknown as { subtitleMaxChars?: number }).subtitleMaxChars ?? 18);
+                setSubtitleEnabled((data as unknown as { subtitleEnabled?: boolean }).subtitleEnabled ?? true);
+                setCtaEnabled((data as unknown as { ctaEnabled?: boolean }).ctaEnabled ?? false);
+                setCtaUrl((data as unknown as { ctaUrl?: string }).ctaUrl || "");
+                setCtaText((data as unknown as { ctaText?: string }).ctaText || "Abrir enlace");
                 
                 // Set initial expanded section based on progress
                 if (data.video) setExpandedSection(null);
@@ -642,6 +726,11 @@ const CreateVideo = ({ onStatusChange: setStatusMessage }: CreateVideoProps) => 
                 await saveSubtitleSettings();
             } catch (e) {
                 console.error("Failed to save subtitle settings", e);
+            }
+            try {
+                await saveCtaSettings();
+            } catch (e) {
+                console.error("Failed to save CTA settings", e);
             }
 
             const response = await API.project
@@ -910,6 +999,79 @@ const CreateVideo = ({ onStatusChange: setStatusMessage }: CreateVideoProps) => 
                                         rows={4}
                                         className="bg-white dark:bg-slate-950"
                                     />
+                                </div>
+                                <div>
+                                    <label className="text-xs font-medium text-slate-500 mb-1 block">Attach files to Knowledge Base</label>
+                                    <Input
+                                        type="file"
+                                        accept=".md,.docx,.png,.jpg,.jpeg"
+                                        onChange={handleUploadKbFile}
+                                        disabled={kbUploading}
+                                        className="bg-white dark:bg-slate-950"
+                                    />
+                                    <p className="text-[10px] text-slate-400 mt-1">
+                                        Supported: .md, .docx, .png, .jpg. Remote vision only runs if ENABLE_REMOTE_VISION=true and a key exists.
+                                    </p>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2">
+                                        <div>
+                                            <label className="text-[10px] text-slate-400 block mb-1">Visión (OCR) remota</label>
+                                            <Select value={kbVisionMode} onValueChange={(v) => setKbVisionMode(v as KbVisionMode)}>
+                                                <SelectTrigger className="bg-white dark:bg-slate-950 h-8">
+                                                    <SelectValue placeholder="Vision mode" />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="auto">Auto (free-first)</SelectItem>
+                                                    <SelectItem value="off">Off</SelectItem>
+                                                    <SelectItem value="force">Force (remote)</SelectItem>
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                        <div>
+                                            <label className="text-[10px] text-slate-400 block mb-1">Modelo de visión</label>
+                                            <Select value={kbVisionModelPreset} onValueChange={setKbVisionModelPreset}>
+                                                <SelectTrigger className="bg-white dark:bg-slate-950 h-8">
+                                                    <SelectValue placeholder="Vision model" />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    <SelectItem value="auto">Auto (env)</SelectItem>
+                                                    <SelectItem value="llama-3.2-11b-vision-preview">llama-3.2-11b-vision-preview</SelectItem>
+                                                    <SelectItem value="llama-3.2-90b-vision-preview">llama-3.2-90b-vision-preview</SelectItem>
+                                                    <SelectItem value="custom">Custom</SelectItem>
+                                                </SelectContent>
+                                            </Select>
+                                            {kbVisionModelPreset === "custom" && (
+                                                <Input
+                                                    value={kbVisionModelCustom}
+                                                    onChange={(e) => setKbVisionModelCustom(e.target.value)}
+                                                    placeholder="Escribe el model id (Groq)"
+                                                    className="bg-white dark:bg-slate-950 h-8 mt-2"
+                                                />
+                                            )}
+                                        </div>
+                                    </div>
+                                    {kbAttachments.length > 0 && (
+                                        <div className="mt-2 space-y-1">
+                                            {kbAttachments.map((att) => (
+                                                <div key={att.id} className="flex items-center justify-between gap-2">
+                                                    <span className="text-xs truncate">{att.originalName}</span>
+                                                    <div className="flex items-center gap-2 shrink-0">
+                                                        <span className="text-[10px] text-slate-400">
+                                                            {att.extractionProvider}
+                                                            {att.extractionModel ? `:${att.extractionModel}` : ""}
+                                                        </span>
+                                                        <a
+                                                            className="text-[10px] text-blue-600 dark:text-blue-400 underline"
+                                                            href={joinUrl(apiBaseUrl, `/project/${videoId}/kb/file/${att.storedName}`)}
+                                                            target="_blank"
+                                                            rel="noreferrer"
+                                                        >
+                                                            Open
+                                                        </a>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
                                 </div>
                             </div>
                         )}
@@ -1247,123 +1409,136 @@ const CreateVideo = ({ onStatusChange: setStatusMessage }: CreateVideoProps) => 
                                     />
                                 </audio>
                                 <div className="mt-4 grid grid-cols-1 gap-3 rounded-md border border-slate-200 dark:border-slate-800 p-3 bg-slate-50 dark:bg-slate-900">
-                                    <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                                        Subtítulos
-                                    </div>
-
-                                    <div className="grid grid-cols-1 gap-2">
-                                        <label className="text-xs text-slate-500">Fuente</label>
-                                        <select
-                                            value={subtitleFont}
-                                            onChange={(e) => setSubtitleFont(e.target.value)}
-                                            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 dark:bg-slate-950 dark:border-slate-800"
-                                        >
-                                            <option value="badabb.ttf">badabb.ttf</option>
-                                            {fontOptions
-                                                .filter((f) => f !== "badabb.ttf")
-                                                .map((f) => (
-                                                    <option key={f} value={f}>
-                                                        {f}
-                                                    </option>
-                                                ))}
-                                        </select>
-                                    </div>
-
-                                    <div className="grid grid-cols-1 gap-2">
-                                        <label className="text-xs text-slate-500">
-                                            Tamaño ({subtitleFontSize}px)
-                                        </label>
-                                        <input
-                                            type="range"
-                                            min="20"
-                                            max="200"
-                                            step="5"
-                                            value={subtitleFontSize}
-                                            onChange={(e) => setSubtitleFontSize(Number(e.target.value))}
-                                            className="w-full"
-                                        />
-                                    </div>
-
-                                    <div className="grid grid-cols-2 gap-3">
-                                        <div className="grid grid-cols-1 gap-2">
-                                            <label className="text-xs text-slate-500">Color texto</label>
-                                            <input
-                                                type="color"
-                                                value={subtitleColor}
-                                                onChange={(e) => setSubtitleColor(e.target.value)}
-                                                className="h-9 w-full rounded-md border border-slate-200 dark:border-slate-800 bg-transparent"
-                                            />
+                                    <div className="flex items-center justify-between gap-3">
+                                        <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                                            Subtítulos
                                         </div>
-                                        <div className="grid grid-cols-1 gap-2">
-                                            <label className="text-xs text-slate-500">Color borde</label>
+                                        <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 select-none">
                                             <input
-                                                type="color"
-                                                value={subtitleStrokeColor}
-                                                onChange={(e) => setSubtitleStrokeColor(e.target.value)}
-                                                className="h-9 w-full rounded-md border border-slate-200 dark:border-slate-800 bg-transparent"
+                                                type="checkbox"
+                                                checked={subtitleEnabled}
+                                                onChange={(e) => setSubtitleEnabled(e.target.checked)}
+                                                className="h-4 w-4"
                                             />
-                                        </div>
-                                    </div>
-
-                                    <div className="grid grid-cols-1 gap-2">
-                                        <label className="text-xs text-slate-500">
-                                            Grosor borde ({subtitleStrokeWidth}px)
+                                            ON
                                         </label>
-                                        <input
-                                            type="range"
-                                            min="0"
-                                            max="12"
-                                            step="1"
-                                            value={subtitleStrokeWidth}
-                                            onChange={(e) => setSubtitleStrokeWidth(Number(e.target.value))}
-                                            className="w-full"
-                                        />
                                     </div>
 
-                                    <div className="grid grid-cols-1 gap-2">
-                                        <label className="text-xs text-slate-500">Posición</label>
-                                        <select
-                                            value={subtitlePosition}
-                                            onChange={(e) => setSubtitlePosition(e.target.value as SubtitlePosition)}
-                                            className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 dark:bg-slate-950 dark:border-slate-800"
-                                        >
-                                            <option value="bottom">Abajo</option>
-                                            <option value="center">Centro</option>
-                                            <option value="top">Arriba</option>
-                                            <option value="custom">Personalizado</option>
-                                        </select>
-                                    </div>
-
-                                    {subtitlePosition === "custom" ? (
+                                    <div className={subtitleEnabled ? "" : "opacity-50 pointer-events-none"}>
                                         <div className="grid grid-cols-1 gap-2">
+                                            <label className="text-xs text-slate-500">Fuente</label>
+                                            <select
+                                                value={subtitleFont}
+                                                onChange={(e) => setSubtitleFont(e.target.value)}
+                                                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 dark:bg-slate-950 dark:border-slate-800"
+                                            >
+                                                <option value="badabb.ttf">badabb.ttf</option>
+                                                {fontOptions
+                                                    .filter((f) => f !== "badabb.ttf")
+                                                    .map((f) => (
+                                                        <option key={f} value={f}>
+                                                            {f}
+                                                        </option>
+                                                    ))}
+                                            </select>
+                                        </div>
+
+                                        <div className="mt-3 grid grid-cols-1 gap-2">
                                             <label className="text-xs text-slate-500">
-                                                Y ({Math.round(subtitlePositionY * 100)}%)
+                                                Tamaño ({subtitleFontSize}px)
+                                            </label>
+                                            <input
+                                                type="range"
+                                                min="20"
+                                                max="200"
+                                                step="5"
+                                                value={subtitleFontSize}
+                                                onChange={(e) => setSubtitleFontSize(Number(e.target.value))}
+                                                className="w-full"
+                                            />
+                                        </div>
+
+                                        <div className="mt-3 grid grid-cols-2 gap-3">
+                                            <div className="grid grid-cols-1 gap-2">
+                                                <label className="text-xs text-slate-500">Color texto</label>
+                                                <input
+                                                    type="color"
+                                                    value={subtitleColor}
+                                                    onChange={(e) => setSubtitleColor(e.target.value)}
+                                                    className="h-9 w-full rounded-md border border-slate-200 dark:border-slate-800 bg-transparent"
+                                                />
+                                            </div>
+                                            <div className="grid grid-cols-1 gap-2">
+                                                <label className="text-xs text-slate-500">Color borde</label>
+                                                <input
+                                                    type="color"
+                                                    value={subtitleStrokeColor}
+                                                    onChange={(e) => setSubtitleStrokeColor(e.target.value)}
+                                                    className="h-9 w-full rounded-md border border-slate-200 dark:border-slate-800 bg-transparent"
+                                                />
+                                            </div>
+                                        </div>
+
+                                        <div className="mt-3 grid grid-cols-1 gap-2">
+                                            <label className="text-xs text-slate-500">
+                                                Grosor borde ({subtitleStrokeWidth}px)
                                             </label>
                                             <input
                                                 type="range"
                                                 min="0"
-                                                max="100"
+                                                max="12"
                                                 step="1"
-                                                value={Math.round(subtitlePositionY * 100)}
-                                                onChange={(e) => setSubtitlePositionY(Number(e.target.value) / 100)}
+                                                value={subtitleStrokeWidth}
+                                                onChange={(e) => setSubtitleStrokeWidth(Number(e.target.value))}
                                                 className="w-full"
                                             />
                                         </div>
-                                    ) : null}
 
-                                    <div className="grid grid-cols-1 gap-2">
-                                        <label className="text-xs text-slate-500">
-                                            Máx caracteres por línea ({subtitleMaxChars})
-                                        </label>
-                                        <input
-                                            type="range"
-                                            min="10"
-                                            max="40"
-                                            step="1"
-                                            value={subtitleMaxChars}
-                                            onChange={(e) => setSubtitleMaxChars(Number(e.target.value))}
-                                            className="w-full"
-                                        />
+                                        <div className="mt-3 grid grid-cols-1 gap-2">
+                                            <label className="text-xs text-slate-500">Posición</label>
+                                            <select
+                                                value={subtitlePosition}
+                                                onChange={(e) => setSubtitlePosition(e.target.value as SubtitlePosition)}
+                                                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 dark:bg-slate-950 dark:border-slate-800"
+                                            >
+                                                <option value="bottom">Abajo</option>
+                                                <option value="center">Centro</option>
+                                                <option value="top">Arriba</option>
+                                                <option value="custom">Personalizado</option>
+                                            </select>
+                                        </div>
+
+                                        {subtitlePosition === "custom" ? (
+                                            <div className="mt-3 grid grid-cols-1 gap-2">
+                                                <label className="text-xs text-slate-500">
+                                                    Y ({Math.round(subtitlePositionY * 100)}%)
+                                                </label>
+                                                <input
+                                                    type="range"
+                                                    min="0"
+                                                    max="100"
+                                                    step="1"
+                                                    value={Math.round(subtitlePositionY * 100)}
+                                                    onChange={(e) => setSubtitlePositionY(Number(e.target.value) / 100)}
+                                                    className="w-full"
+                                                />
+                                            </div>
+                                        ) : null}
+
+                                        <div className="mt-3 grid grid-cols-1 gap-2">
+                                            <label className="text-xs text-slate-500">
+                                                Máx caracteres por línea ({subtitleMaxChars})
+                                            </label>
+                                            <input
+                                                type="range"
+                                                min="10"
+                                                max="40"
+                                                step="1"
+                                                value={subtitleMaxChars}
+                                                onChange={(e) => setSubtitleMaxChars(Number(e.target.value))}
+                                                className="w-full"
+                                            />
+                                        </div>
                                     </div>
                                 </div>
                                 <div className="mt-4 flex gap-2">
@@ -1385,11 +1560,23 @@ const CreateVideo = ({ onStatusChange: setStatusMessage }: CreateVideoProps) => 
                 <b>Result Video</b>
                 {video ? (
                     <>
-                        <video controls className="rounded w-full" key={`${videoId}-${videoTimestamp}`}>
-                            <source
-                                src={joinUrl(apiBaseUrl, `/project/${videoId}/video?t=${videoTimestamp}`)}
-                            />
-                        </video>
+                        <div className="relative w-full">
+                            <video controls className="rounded w-full" key={`${videoId}-${videoTimestamp}`}>
+                                <source
+                                    src={joinUrl(apiBaseUrl, `/project/${videoId}/video?t=${videoTimestamp}`)}
+                                />
+                            </video>
+                            {ctaEnabled && /^https?:\/\//i.test(ctaUrl.trim()) ? (
+                                <a
+                                    href={ctaUrl.trim()}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="absolute top-3 right-3 bg-black/60 hover:bg-black/70 text-white text-xs px-3 py-2 rounded-md border border-white/10 backdrop-blur"
+                                >
+                                    {ctaText.trim() || "Abrir enlace"}
+                                </a>
+                            ) : null}
+                        </div>
                         <div className="flex gap-2 mt-2 w-full">
                              <Button onClick={handleShare} className="flex-1 bg-blue-600 hover:bg-blue-700 text-white">
                                  <Share2 className="w-4 h-4 mr-2" /> Share Video
@@ -1397,6 +1584,45 @@ const CreateVideo = ({ onStatusChange: setStatusMessage }: CreateVideoProps) => 
                              <Button variant="outline" onClick={handleDownload} title="Download Video">
                                  <Download className="w-4 h-4" />
                              </Button>
+                        </div>
+                        <div className="mt-3 grid grid-cols-1 gap-3 rounded-md border border-slate-200 dark:border-slate-800 p-3 bg-slate-50 dark:bg-slate-900">
+                            <div className="flex items-center justify-between gap-3">
+                                <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                                    Hipervínculo (web)
+                                </div>
+                                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300 select-none">
+                                    <input
+                                        type="checkbox"
+                                        checked={ctaEnabled}
+                                        onChange={(e) => setCtaEnabled(e.target.checked)}
+                                        className="h-4 w-4"
+                                    />
+                                    ON
+                                </label>
+                            </div>
+                            <div className={ctaEnabled ? "" : "opacity-50 pointer-events-none"}>
+                                <div className="grid grid-cols-1 gap-2">
+                                    <label className="text-xs text-slate-500">URL (http/https)</label>
+                                    <input
+                                        value={ctaUrl}
+                                        onChange={(e) => setCtaUrl(e.target.value)}
+                                        placeholder="https://ejemplo.com"
+                                        className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 dark:bg-slate-950 dark:border-slate-800"
+                                    />
+                                </div>
+                                <div className="mt-3 grid grid-cols-1 gap-2">
+                                    <label className="text-xs text-slate-500">Texto</label>
+                                    <input
+                                        value={ctaText}
+                                        onChange={(e) => setCtaText(e.target.value)}
+                                        placeholder="Abrir enlace"
+                                        className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 dark:bg-slate-950 dark:border-slate-800"
+                                    />
+                                </div>
+                                <div className="mt-2 text-[11px] text-slate-500">
+                                    Se muestra como botón clicable encima del video dentro de esta web.
+                                </div>
+                            </div>
                         </div>
                     </>
                 ) : (

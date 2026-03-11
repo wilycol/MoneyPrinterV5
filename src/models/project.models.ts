@@ -24,6 +24,8 @@ export const createScript = t.Object({
     topic: t.String(),
     language: t.String(),
     sentences: t.String(),
+    sourceUrl: t.Optional(t.String()),
+    contextText: t.Optional(t.String()),
 });
 
 export const createImagePrompts = t.Object({
@@ -31,6 +33,8 @@ export const createImagePrompts = t.Object({
     script: t.String(),
     images: t.String(),
     prompt: t.String(),
+    sourceUrl: t.Optional(t.String()),
+    contextText: t.Optional(t.String()),
 });
 
 export const createScriptToSpeech = t.Object({

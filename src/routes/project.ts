@@ -75,7 +75,10 @@ export type Metadata = {
     imagesPrompts: string[];
     title: string;
     description: string;
+    kbContext: string;
+    kbAttachments: KbAttachment[];
     subtitleFont: string;
+    subtitleEnabled: boolean;
     subtitleFontSize: number;
     subtitleColor: string;
     subtitleStrokeColor: string;
@@ -83,6 +86,21 @@ export type Metadata = {
     subtitlePosition: SubtitlePosition;
     subtitlePositionY: number;
     subtitleMaxChars: number;
+    ctaEnabled: boolean;
+    ctaUrl: string;
+    ctaText: string;
+};
+
+export type KbAttachment = {
+    id: string;
+    storedName: string;
+    originalName: string;
+    mime: string;
+    size: number;
+    createdAt: number;
+    extractedText: string;
+    extractionProvider: "none" | "md" | "docx" | "groq-vision";
+    extractionModel: string;
 };
 
 const defaultMetdata: Metadata = {
@@ -102,7 +120,10 @@ const defaultMetdata: Metadata = {
     imagesPrompts: [],
     title: "",
     description: "",
+    kbContext: "",
+    kbAttachments: [],
     subtitleFont: "badabb.ttf",
+    subtitleEnabled: true,
     subtitleFontSize: 100,
     subtitleColor: "#FFFF00",
     subtitleStrokeColor: "black",
@@ -110,6 +131,9 @@ const defaultMetdata: Metadata = {
     subtitlePosition: "center",
     subtitlePositionY: 0.85,
     subtitleMaxChars: 18,
+    ctaEnabled: false,
+    ctaUrl: "",
+    ctaText: "Abrir enlace",
 };
 
 const readMetadata = async (videoId: string) => {
@@ -144,22 +168,152 @@ const updateMetadata = async (videoId: string, metadata: Partial<Metadata>) => {
             JSON.stringify(defaultMetdata, null, 2)
         );
     }
-    Object.keys(metadata).map((key) => {
-        if (key === "imagesPath") {
-            readMetadata[key]?.push(
-                // @ts-ignore
-                metadata[key]?.at(0)
-            );
-        } else {
-            // @ts-ignore
-            readMetadata[key] = metadata[key];
+
+    Object.keys(metadata).forEach((key) => {
+        const existing = (readMetadata as Record<string, unknown>)[key];
+        const incoming = (metadata as Record<string, unknown>)[key];
+
+        if (key === "imagesPath" || key === "kbAttachments") {
+            if (Array.isArray(existing) && Array.isArray(incoming)) {
+                const first = incoming.at(0);
+                if (typeof first !== "undefined") existing.push(first);
+                return;
+            }
         }
+
+        (readMetadata as Record<string, unknown>)[key] = incoming;
     });
 
     await Bun.write(
         Bun.file(metadataPath),
         JSON.stringify(readMetadata, null, 2)
     );
+};
+
+const getProjectDir = (id: string) => path.join(__dirname, "../..", "videos", id);
+const getKbDir = (id: string) => path.join(getProjectDir(id), "kb");
+
+const clampText = (text: string, maxChars: number) => {
+    if (text.length <= maxChars) return text;
+    return text.slice(-maxChars);
+};
+
+const extractDocxText = async (docxPath: string) => {
+    const pythonPath = path.resolve(process.cwd(), "venv", "Scripts", "python.exe");
+    const scriptPath = path.resolve(process.cwd(), "python", "extract_docx_text.py");
+
+    const proc = Bun.spawn([pythonPath, scriptPath, docxPath], {
+        cwd: process.cwd(),
+        stdout: "pipe",
+        stderr: "pipe",
+    });
+
+    const stdout = await new Response(proc.stdout).text();
+    const stderr = await new Response(proc.stderr).text();
+
+    if (proc.exitCode !== 0) {
+        throw new Error(stderr || "DOCX extraction failed");
+    }
+
+    const parsed = JSON.parse(stdout) as unknown;
+    const text =
+        parsed && typeof parsed === "object" && "text" in parsed
+            ? String((parsed as { text?: unknown }).text ?? "")
+            : "";
+    return text;
+};
+
+const isTruthyString = (value: unknown) => {
+    if (typeof value !== "string") return false;
+    const v = value.trim().toLowerCase();
+    return v === "1" || v === "true" || v === "yes" || v === "on";
+};
+
+const extractImageTextGroqOnce = async (file: File, model: string) => {
+    const apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) return { text: "", provider: "none" as const, model: "" };
+
+    const buf = Buffer.from(await file.arrayBuffer());
+    const base64 = buf.toString("base64");
+    const mime = file.type || "image/jpeg";
+    const dataUrl = `data:${mime};base64,${base64}`;
+
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+            model,
+            temperature: 0.2,
+            messages: [
+                {
+                    role: "user",
+                    content: [
+                        {
+                            type: "text",
+                            text: "Extrae el texto visible de la imagen. Devuelve solo el texto, sin explicaciones.",
+                        },
+                        {
+                            type: "image_url",
+                            image_url: { url: dataUrl },
+                        },
+                    ],
+                },
+            ],
+        }),
+    });
+
+    if (response.status !== 200) {
+        const errText = await response.text().catch(() => "");
+        throw new Error(`Groq vision error ${response.status}: ${errText}`);
+    }
+
+    const data = (await response.json()) as unknown;
+    const content =
+        data &&
+        typeof data === "object" &&
+        "choices" in data &&
+        Array.isArray((data as { choices?: unknown }).choices)
+            ? (data as { choices: Array<{ message?: { content?: unknown } }> }).choices?.[0]?.message
+                  ?.content
+            : "";
+
+    return { text: String(content || ""), provider: "groq-vision" as const, model };
+};
+
+const extractImageTextGroq = async (
+    file: File,
+    opts: { visionMode: "auto" | "force" | "off"; visionModel?: string }
+) => {
+    const apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) return { text: "", provider: "none" as const, model: "" };
+
+    const envEnabled = (process.env.ENABLE_REMOTE_VISION || "false").toLowerCase() === "true";
+    const shouldRun =
+        opts.visionMode === "force" ? true : opts.visionMode === "off" ? false : envEnabled;
+    if (!shouldRun) return { text: "", provider: "none" as const, model: "" };
+
+    const envModel = process.env.GROQ_VISION_MODEL || "";
+    const candidates = [
+        opts.visionModel && opts.visionModel !== "auto" ? opts.visionModel : "",
+        envModel,
+        "llama-3.2-11b-vision-preview",
+        "llama-3.2-90b-vision-preview",
+    ].filter((m) => typeof m === "string" && m.trim().length > 0);
+
+    let lastError: unknown = null;
+    for (const model of candidates) {
+        try {
+            return await extractImageTextGroqOnce(file, model);
+        } catch (e) {
+            lastError = e;
+        }
+    }
+
+    if (lastError) throw lastError;
+    return { text: "", provider: "none" as const, model: "" };
 };
 
 export const projectRoutes = new Elysia({
@@ -373,6 +527,7 @@ export const projectRoutes = new Elysia({
         async ({ params: { id }, body }) => {
             try {
                 await updateMetadata(id, {
+                    subtitleEnabled: body.subtitleEnabled,
                     subtitleFont: body.subtitleFont,
                     subtitleFontSize: body.subtitleFontSize,
                     subtitleColor: body.subtitleColor,
@@ -393,6 +548,7 @@ export const projectRoutes = new Elysia({
         },
         {
             body: t.Object({
+                subtitleEnabled: t.Boolean(),
                 subtitleFont: t.String(),
                 subtitleFontSize: t.Number(),
                 subtitleColor: t.String(),
@@ -406,6 +562,46 @@ export const projectRoutes = new Elysia({
                 ]),
                 subtitlePositionY: t.Number(),
                 subtitleMaxChars: t.Number(),
+            }),
+        }
+    )
+    .post(
+        "/:id/cta",
+        async ({ params: { id }, body }) => {
+            const enabled = body.enabled;
+            const url = enabled ? body.url.trim() : "";
+            const text = enabled ? body.text.trim() : "Abrir enlace";
+
+            if (enabled) {
+                const isHttp = url.startsWith("https://") || url.startsWith("http://");
+                if (!isHttp) {
+                    return new Response(JSON.stringify({ error: "Invalid URL", details: "La URL debe iniciar con http:// o https://." }), {
+                        status: 400,
+                        headers: { "Content-Type": "application/json" },
+                    });
+                }
+            }
+
+            try {
+                await updateMetadata(id, {
+                    ctaEnabled: enabled,
+                    ctaUrl: url,
+                    ctaText: text || "Abrir enlace",
+                });
+                return { success: true };
+            } catch (e) {
+                console.error("Error updating CTA settings:", e);
+                return new Response(JSON.stringify({ error: "Update failed", details: String(e) }), {
+                    status: 500,
+                    headers: { "Content-Type": "application/json" },
+                });
+            }
+        },
+        {
+            body: t.Object({
+                enabled: t.Boolean(),
+                url: t.String(),
+                text: t.String(),
             }),
         }
     )
@@ -423,6 +619,135 @@ export const projectRoutes = new Elysia({
         }
         
         return metadata;
+    })
+    .post(
+        "/:id/kb/upload",
+        async ({ params: { id }, body: { file, visionMode, visionModel } }) => {
+            try {
+                if (!file) throw new Error("No file provided");
+
+                const originalName = typeof file.name === "string" ? file.name : "attachment";
+                const ext = path.extname(originalName).toLowerCase();
+                const allowedExt = new Set([".md", ".docx", ".png", ".jpg", ".jpeg"]);
+                if (!allowedExt.has(ext)) {
+                    return new Response(
+                        JSON.stringify({
+                            error: "Unsupported file type",
+                            details: `Solo se permiten: ${Array.from(allowedExt).join(", ")}`,
+                        }),
+                        { status: 400, headers: { "Content-Type": "application/json" } }
+                    );
+                }
+
+                const maxBytes = Number(process.env.KB_MAX_UPLOAD_BYTES || String(15 * 1024 * 1024));
+                if (typeof file.size === "number" && file.size > maxBytes) {
+                    return new Response(
+                        JSON.stringify({
+                            error: "File too large",
+                            details: `Tamaño máximo permitido: ${maxBytes} bytes`,
+                        }),
+                        { status: 413, headers: { "Content-Type": "application/json" } }
+                    );
+                }
+
+                const kbDir = getKbDir(id);
+                await mkdir(kbDir, { recursive: true });
+
+                const storedName = `${randomUUIDv7()}${ext}`;
+                const storedPath = path.join(kbDir, storedName);
+                await Bun.write(storedPath, file);
+
+                let extractedText = "";
+                let extractionProvider: KbAttachment["extractionProvider"] = "none";
+                let extractionModel = "";
+                const normalizedVisionMode: "auto" | "force" | "off" =
+                    visionMode === "force" || isTruthyString(visionMode)
+                        ? "force"
+                        : visionMode === "off"
+                          ? "off"
+                          : "auto";
+
+                try {
+                    if (ext === ".md") {
+                        extractedText = await file.text();
+                        extractionProvider = "md";
+                    } else if (ext === ".docx") {
+                        extractedText = await extractDocxText(storedPath);
+                        extractionProvider = "docx";
+                    } else if (ext === ".png" || ext === ".jpg" || ext === ".jpeg") {
+                        const extracted = await extractImageTextGroq(file, {
+                            visionMode: normalizedVisionMode,
+                            visionModel: typeof visionModel === "string" ? visionModel : undefined,
+                        });
+                        extractedText = extracted.text;
+                        extractionProvider = extracted.provider;
+                        extractionModel = extracted.model;
+                    }
+                } catch (e) {
+                    console.error("KB extraction failed, continuing without extracted text:", e);
+                    extractedText = "";
+                    extractionProvider = "none";
+                    extractionModel = "";
+                }
+
+                const attachment: KbAttachment = {
+                    id: randomUUIDv7(),
+                    storedName,
+                    originalName,
+                    mime: typeof file.type === "string" ? file.type : "",
+                    size: typeof file.size === "number" ? file.size : 0,
+                    createdAt: Date.now(),
+                    extractedText: clampText(String(extractedText || ""), Number(process.env.KB_MAX_EXTRACTED_CHARS || "12000")),
+                    extractionProvider,
+                    extractionModel,
+                };
+
+                const metadata = (await readMetadata(id)) as Partial<Metadata>;
+                const prevKbContext = typeof metadata.kbContext === "string" ? metadata.kbContext : "";
+                const chunk =
+                    attachment.extractedText.trim().length > 0
+                        ? `\n\n[KB:${attachment.originalName}]\n${attachment.extractedText}`
+                        : "";
+                const kbContext = clampText(
+                    `${prevKbContext}${chunk}`,
+                    Number(process.env.KB_MAX_CHARS || "20000")
+                );
+
+                await updateMetadata(id, {
+                    // @ts-ignore
+                    kbAttachments: [attachment],
+                    kbContext,
+                });
+
+                return { success: true, attachment };
+            } catch (e) {
+                console.error("Error uploading KB attachment:", e);
+                return new Response(
+                    JSON.stringify({ error: "Upload failed", details: e instanceof Error ? e.message : String(e) }),
+                    { status: 500, headers: { "Content-Type": "application/json" } }
+                );
+            }
+        },
+        {
+            body: t.Object({
+                file: t.File(),
+                visionMode: t.Optional(t.String()),
+                visionModel: t.Optional(t.String()),
+            }),
+        }
+    )
+    .get("/:id/kb/list", async ({ params: { id } }) => {
+        const metadata = (await readMetadata(id)) as Partial<Metadata>;
+        const kbAttachments = Array.isArray(metadata.kbAttachments) ? metadata.kbAttachments : [];
+        return kbAttachments;
+    })
+    .get("/:id/kb/file/:storedName", async ({ params: { id, storedName } }) => {
+        const filePath = path.join(getKbDir(id), storedName);
+        const file = Bun.file(filePath);
+        if (!(await file.exists())) {
+            return new Response("Not Found", { status: 404 });
+        }
+        return file;
     })
     .get("/:id/images/:image", ({ params: { id, image } }) => {
         const imagePath = path.join(__dirname, "../..", "videos", id, image);
@@ -585,6 +910,7 @@ export const projectRoutes = new Elysia({
                     env: {
                         ...process.env,
                         FACE_CLIP: metadata.faceClip || "therock.mp4",
+                        SUBTITLE_ENABLED: String(metadata.subtitleEnabled ?? true),
                         SUBTITLE_FONT: metadata.subtitleFont || "badabb.ttf",
                         SUBTITLE_FONT_SIZE: String(metadata.subtitleFontSize ?? 100),
                         SUBTITLE_COLOR: metadata.subtitleColor || "#FFFF00",
@@ -630,6 +956,12 @@ export const projectRoutes = new Elysia({
         "/create/:id/topic",
         async ({ params: { id }, body: { argument, prompt, sourceUrl, contextText } }) => {
             let context = "";
+
+            const metadata = (await readMetadata(id)) as Partial<Metadata>;
+            const kbContext = typeof metadata.kbContext === "string" ? metadata.kbContext.trim() : "";
+            if (kbContext) {
+                context += `\n\nBASE DE CONOCIMIENTO (ADJUNTOS):\n"${kbContext}"\n\n`;
+            }
             
             if (sourceUrl) {
                 console.log(`Scraping URL: ${sourceUrl}`);
@@ -665,14 +997,38 @@ export const projectRoutes = new Elysia({
         "/create/:id/script",
         async ({
             params: { id },
-            body: { prompt, topic, language, sentences },
+            body: { prompt, topic, language, sentences, sourceUrl, contextText },
         }) => {
-            const script = await cld.generateResponse(
-                prompt
-                    .replaceAll("%TOPIC%", topic)
-                    .replaceAll("%LANGUAGE%", language)
-                    .replaceAll("%SENTENCES%", sentences)
-            );
+            let context = "";
+
+            const metadata = (await readMetadata(id)) as Partial<Metadata>;
+            const kbContext = typeof metadata.kbContext === "string" ? metadata.kbContext.trim() : "";
+            if (kbContext) {
+                context += `\n\nBASE DE CONOCIMIENTO (ADJUNTOS):\n"${kbContext}"\n\n`;
+            }
+
+            if (sourceUrl) {
+                console.log(`Scraping URL: ${sourceUrl}`);
+                const scrapedContent = await scrapeUrl(sourceUrl);
+                if (scrapedContent) {
+                    context += `\n\nCONTEXTO EXTRAÍDO DE ${sourceUrl}:\n"${scrapedContent}"\n\n`;
+                }
+            }
+
+            if (contextText) {
+                context += `\n\nCONTEXTO ADICIONAL PROPORCIONADO POR EL USUARIO:\n"${contextText}"\n\n`;
+            }
+
+            let finalPrompt = prompt
+                .replaceAll("%TOPIC%", topic)
+                .replaceAll("%LANGUAGE%", language)
+                .replaceAll("%SENTENCES%", sentences);
+
+            if (context) {
+                finalPrompt += `\n\nINSTRUCCIONES ADICIONALES: Utiliza la siguiente información de contexto para redactar el guion. El guion debe estar basado en este contenido si es posible.\n${context}`;
+            }
+
+            const script = await cld.generateResponse(finalPrompt);
             await updateMetadata(id, {
                 script: script,
                 language: language,
@@ -687,14 +1043,37 @@ export const projectRoutes = new Elysia({
 
     .post(
         "/create/:id/imagePrompts",
-        async ({ params: { id }, body: { images, script, topic, prompt } }) => {
-            let imagePrompts = await cld.generateResponse(
-                prompt
-                    .replaceAll("%TOPIC%", topic)
-                    .replaceAll("%SCRIPT%", script)
-                    .replaceAll("%IMAGES%", images),
-                true
-            );
+        async ({ params: { id }, body: { images, script, topic, prompt, sourceUrl, contextText } }) => {
+            let context = "";
+
+            const metadata = (await readMetadata(id)) as Partial<Metadata>;
+            const kbContext = typeof metadata.kbContext === "string" ? metadata.kbContext.trim() : "";
+            if (kbContext) {
+                context += `\n\nBASE DE CONOCIMIENTO (ADJUNTOS):\n"${kbContext}"\n\n`;
+            }
+
+            if (sourceUrl) {
+                console.log(`Scraping URL: ${sourceUrl}`);
+                const scrapedContent = await scrapeUrl(sourceUrl);
+                if (scrapedContent) {
+                    context += `\n\nCONTEXTO EXTRAÍDO DE ${sourceUrl}:\n"${scrapedContent}"\n\n`;
+                }
+            }
+
+            if (contextText) {
+                context += `\n\nCONTEXTO ADICIONAL PROPORCIONADO POR EL USUARIO:\n"${contextText}"\n\n`;
+            }
+
+            let finalPrompt = prompt
+                .replaceAll("%TOPIC%", topic)
+                .replaceAll("%SCRIPT%", script)
+                .replaceAll("%IMAGES%", images);
+
+            if (context) {
+                finalPrompt += `\n\nINSTRUCCIONES ADICIONALES: Utiliza la siguiente información de contexto para generar los prompts de imagen. Los prompts deben estar basados en este contenido si es posible.\n${context}`;
+            }
+
+            let imagePrompts = await cld.generateResponse(finalPrompt, true);
 
             // Fix for Groq/OpenAI wrapping arrays in objects (e.g. { "image_prompts": [...] })
             if (imagePrompts && !Array.isArray(imagePrompts) && typeof imagePrompts === 'object') {

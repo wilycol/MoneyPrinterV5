@@ -14,6 +14,21 @@ class Cloudflare {
 
     public async generateResponse(prompt: string, json: boolean = false) {
         try {
+            const attemptedProviders = new Set<string>();
+            const primaryProvider = (process.env.LLM_PRIMARY || "ollama").toLowerCase();
+
+            if (primaryProvider === "groq") {
+                attemptedProviders.add("groq");
+                const groqResponse = await this.callGroq(prompt, json);
+                if (groqResponse) return groqResponse;
+            }
+
+            if (primaryProvider === "nvidia") {
+                attemptedProviders.add("nvidia");
+                const nvidiaResponse = await this.callNvidiaChat(prompt, json);
+                if (nvidiaResponse) return nvidiaResponse;
+            }
+
             // 1. Intentar leer la URL dinámica de Google Drive
             let endpoint = this.endpoint;
             const DRIVE_URL_FILE = "G:/Mi unidad/MoneyPrinterV5/ngrok_url.txt";
@@ -64,7 +79,19 @@ class Cloudflare {
                 }
             } catch (ollamaError) {
                 console.warn("⚠️ Local Ollama failed, trying Groq fallback...", ollamaError);
-                return await this.callGroq(prompt, json);
+                if (!attemptedProviders.has("groq")) {
+                    attemptedProviders.add("groq");
+                    const groqResponse = await this.callGroq(prompt, json);
+                    if (groqResponse) return groqResponse;
+                }
+
+                console.warn("⚠️ Groq fallback failed, trying NVIDIA NIM fallback...");
+                if (!attemptedProviders.has("nvidia")) {
+                    attemptedProviders.add("nvidia");
+                    return await this.callNvidiaChat(prompt, json);
+                }
+
+                return false;
             }
         } catch (e) {
             console.error(e);
@@ -115,6 +142,71 @@ class Cloudflare {
             }
         } catch (e) {
             console.error("Groq API Exception:", e);
+            return false;
+        }
+    }
+
+    private async callNvidiaChat(prompt: string, json: boolean) {
+        const apiKey = process.env.NVIDIA_CHAT_API_KEY || process.env.NVIDIA_API_KEY;
+        if (!apiKey) {
+            console.error("❌ NVIDIA API Key missing. Cannot use fallback.");
+            return false;
+        }
+
+        const invokeUrl =
+            process.env.NVIDIA_CHAT_ENDPOINT ||
+            "https://integrate.api.nvidia.com/v1/chat/completions";
+
+        const model = process.env.NVIDIA_CHAT_MODEL || "qwen/qwen3.5-122b-a10b";
+
+        try {
+            const response = await fetch(invokeUrl, {
+                method: "POST",
+                headers: {
+                    Authorization: `Bearer ${apiKey}`,
+                    Accept: "application/json",
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    model,
+                    messages: [{ role: "user", content: prompt }],
+                    max_tokens: Number(process.env.NVIDIA_CHAT_MAX_TOKENS || "4096"),
+                    temperature: Number(process.env.NVIDIA_CHAT_TEMPERATURE || "0.6"),
+                    top_p: Number(process.env.NVIDIA_CHAT_TOP_P || "0.95"),
+                    stream: false,
+                    chat_template_kwargs: {
+                        enable_thinking:
+                            (process.env.NVIDIA_CHAT_ENABLE_THINKING || "true").toLowerCase() ===
+                            "true",
+                    },
+                }),
+            });
+
+            if (response.status !== 200) {
+                console.error(
+                    "NVIDIA Chat API Error:",
+                    response.status,
+                    await response.text()
+                );
+                return false;
+            }
+
+            const data = await response.json();
+            const content = data?.choices?.[0]?.message?.content;
+            if (!content) return false;
+
+            if (json) {
+                try {
+                    return JSON.parse(content);
+                } catch (e) {
+                    console.error("Error parsing JSON from NVIDIA:", e);
+                    return content;
+                }
+            }
+
+            return String(content).replaceAll('"', "");
+        } catch (e) {
+            console.error("NVIDIA Chat API Exception:", e);
             return false;
         }
     }
