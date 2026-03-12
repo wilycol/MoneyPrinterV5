@@ -23,7 +23,7 @@ def to_edge_rate(value):
 
     percent = round((rate - 1.0) * 100)
     if percent == 0:
-        return "0%"
+        return None
     if percent >= 0:
         return f"+{percent}%"
     return f"{percent}%"

@@ -8,7 +8,7 @@ const readFrontendEnv = (key: string): string | undefined => {
 
 const baseUrl =
     typeof window === "undefined"
-        ? process.env.API_BASE_URL || "http://localhost:3000"
-        : readFrontendEnv("VITE_API_BASE_URL") || "http://localhost:3000";
+        ? process.env.API_BASE_URL || "http://localhost:3001"
+        : readFrontendEnv("VITE_API_BASE_URL") || "http://localhost:3001";
 
 export const API = treaty<App>(baseUrl);

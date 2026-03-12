@@ -13,7 +13,7 @@ export const App = new Elysia()
         credentials: true,
     }))
     .get("/", () => {
-        return new Response("Backend Ready. Open http://localhost:5173 to use the App.");
+        return new Response("Backend Ready. Open http://localhost:5174 to use the App.");
     })
     .get("/chat-ui", () => {
         return new Response(chatHtml);

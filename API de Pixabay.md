@@ -132,7 +132,7 @@ URL de la imagen	URL de la imagen original (imageWidth x imageHeight).
 URL vectorial	URL a un recurso vectorial si está disponible, de lo contrario se omite.
 
 Buscar vídeos
-CONSEGUIRhttps://pixabay.com/api/videos/
+CONSEGUIR https://pixabay.com/api/videos/
 Parámetros
 clave (requerida)	cadena	Su clave API:54971552-9f2ddaf6bc4b5af1593dd2061
 q	cadena	Un término de búsqueda codificado en URL. Si se omite, se devuelven todos los vídeos

@@ -17,180 +17,185 @@ class Cloudflare {
             const attemptedProviders = new Set<string>();
             const primaryProvider = (process.env.LLM_PRIMARY || "ollama").toLowerCase();
 
-            if (primaryProvider === "groq") {
-                attemptedProviders.add("groq");
-                const groqResponse = await this.callGroq(prompt, json);
-                if (groqResponse) return groqResponse;
+            // Timeout helper
+            const fetchWithTimeout = async (url: string, options: any, timeout = 30000) => {
+                const controller = new AbortController();
+                const id = setTimeout(() => controller.abort(), timeout);
+                try {
+                    const response = await fetch(url, { ...options, signal: controller.signal });
+                    clearTimeout(id);
+                    return response;
+                } catch (e) {
+                    clearTimeout(id);
+                    throw e;
+                }
+            };
+
+            const providersChain = [
+                { name: "ollama", call: () => this.callOllama(prompt, json, fetchWithTimeout) },
+                { name: "zhipu", call: () => this.callZhipu(prompt, json, fetchWithTimeout) },
+                { name: "groq", call: () => this.callGroq(prompt, json, fetchWithTimeout) },
+                { name: "nvidia", call: () => this.callNvidiaChat(prompt, json, fetchWithTimeout) }
+            ];
+
+            // Rearrange chain if primaryProvider is set
+            const primary = providersChain.findIndex(p => p.name === primaryProvider);
+            if (primary > -1) {
+                const [p] = providersChain.splice(primary, 1);
+                providersChain.unshift(p);
             }
 
-            if (primaryProvider === "nvidia") {
-                attemptedProviders.add("nvidia");
-                const nvidiaResponse = await this.callNvidiaChat(prompt, json);
-                if (nvidiaResponse) return nvidiaResponse;
+            for (const provider of providersChain) {
+                if (attemptedProviders.has(provider.name)) continue;
+                try {
+                    console.log(`🔄 Attempting provider: ${provider.name}...`);
+                    const response = await provider.call();
+                    if (response) return response;
+                } catch (err) {
+                    console.error(`❌ Provider ${provider.name} failed:`, err instanceof Error ? err.message : "Unknown error");
+                }
+                attemptedProviders.add(provider.name);
             }
 
-            // 1. Intentar leer la URL dinámica de Google Drive
-            let endpoint = this.endpoint;
-            const DRIVE_URL_FILE = "G:/Mi unidad/MoneyPrinterV5/ngrok_url.txt";
-            
-            try {
-                const driveUrl = await Bun.file(DRIVE_URL_FILE).text();
-                if (driveUrl && driveUrl.trim().startsWith("http")) {
-                    endpoint = driveUrl.trim();
-                }
-            } catch (e) {
-                // Si falla, seguimos usando this.endpoint (fallback)
-            }
-
-            // Usar Ollama API en lugar de Cloudflare Worker
-            try {
-                const response = await fetch(`${endpoint}/api/generate`, {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        "ngrok-skip-browser-warning": "69420", // Bypass ngrok warning
-                        "User-Agent": "MoneyPrinterV5-Backend/1.0",
-                        "Origin": endpoint
-                    },
-                    body: JSON.stringify({
-                        model: process.env.OLLAMA_MODEL || "llama3",
-                        prompt: prompt,
-                        stream: false,
-                        format: json ? "json" : undefined,
-                    }),
-                });
-
-                if (response.status === 200) {
-                    const data = await response.json();
-                    const text = data.response;
-
-                    if (json) {
-                        try {
-                            // A veces Ollama devuelve el JSON dentro del string 'response'
-                            return typeof text === "object" ? text : JSON.parse(text);
-                        } catch (e) {
-                            console.error("Error parsing JSON from Ollama:", e);
-                            return text;
-                        }
-                    }
-                    return text.replaceAll('"', "");
-                } else {
-                    throw new Error(`Ollama API Error: ${response.status}`);
-                }
-            } catch (ollamaError) {
-                console.warn("⚠️ Local Ollama failed, trying Groq fallback...", ollamaError);
-                if (!attemptedProviders.has("groq")) {
-                    attemptedProviders.add("groq");
-                    const groqResponse = await this.callGroq(prompt, json);
-                    if (groqResponse) return groqResponse;
-                }
-
-                console.warn("⚠️ Groq fallback failed, trying NVIDIA NIM fallback...");
-                if (!attemptedProviders.has("nvidia")) {
-                    attemptedProviders.add("nvidia");
-                    return await this.callNvidiaChat(prompt, json);
-                }
-
-                return false;
-            }
+            return false;
         } catch (e) {
-            console.error(e);
+            console.error("Critical error in generateResponse:", e instanceof Error ? e.message : e);
             return false;
         }
     }
 
-    private async callGroq(prompt: string, json: boolean) {
-        const apiKey = process.env.GROQ_API_KEY;
-        if (!apiKey) {
-            console.error("❌ Groq API Key missing. Cannot use fallback.");
-            return false;
-        }
-
-        console.log("🔄 Switching to Groq API (Fallback)...");
+    private async callOllama(prompt: string, json: boolean, fetchFn: Function) {
+        let endpoint = this.endpoint;
+        const DRIVE_URL_FILE = "G:/Mi unidad/MoneyPrinterV5/ngrok_url.txt";
         
         try {
-            const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-                method: "POST",
-                headers: {
-                    "Authorization": `Bearer ${apiKey}`,
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify({
-                    messages: [{ role: "user", content: prompt }],
-                    model: process.env.GROQ_MODEL || "llama-3.3-70b-versatile",
-                    temperature: 0.7,
-                    response_format: json ? { type: "json_object" } : undefined 
-                })
-            });
-
-            if (response.status === 200) {
-                const data = await response.json();
-                const content = data.choices[0]?.message?.content;
-                
-                if (json) {
-                     try {
-                        return JSON.parse(content);
-                    } catch (e) {
-                        console.error("Error parsing JSON from Groq:", e);
-                        return content;
-                    }
-                }
-                return content.replaceAll('"', "");
-            } else {
-                 console.error("Groq API Error:", response.status, await response.text());
-                 return false;
+            const driveUrl = await Bun.file(DRIVE_URL_FILE).text();
+            if (driveUrl && driveUrl.trim().startsWith("http")) {
+                endpoint = driveUrl.trim();
             }
-        } catch (e) {
-            console.error("Groq API Exception:", e);
-            return false;
+        } catch (e) { /* ignore */ }
+
+        const response = await fetchFn(`${endpoint}/api/generate`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "ngrok-skip-browser-warning": "69420",
+                "User-Agent": "MoneyPrinterV5-Backend/1.0",
+                "Origin": endpoint
+            },
+            body: JSON.stringify({
+                model: process.env.OLLAMA_MODEL || "llama3",
+                prompt: prompt,
+                stream: false,
+                format: json ? "json" : undefined,
+            }),
+        });
+
+        if (response.status === 200) {
+            const data = await response.json();
+            const text = data.response;
+            if (json) {
+                try {
+                    return typeof text === "object" ? text : JSON.parse(text);
+                } catch (e) {
+                    console.error("Error parsing JSON from Ollama:", e);
+                    return text;
+                }
+            }
+            return text.replaceAll('"', "");
         }
+        return false;
     }
 
-    private async callNvidiaChat(prompt: string, json: boolean) {
-        const apiKey = process.env.NVIDIA_CHAT_API_KEY || process.env.NVIDIA_API_KEY;
-        if (!apiKey) {
-            console.error("❌ NVIDIA API Key missing. Cannot use fallback.");
-            return false;
-        }
+    private async callZhipu(prompt: string, json: boolean, fetchFn: Function) {
+        const apiKey = process.env.ZHIPU_AI_KEY;
+        if (!apiKey) return false;
 
-        const invokeUrl =
-            process.env.NVIDIA_CHAT_ENDPOINT ||
-            "https://integrate.api.nvidia.com/v1/chat/completions";
+        const response = await fetchFn("https://open.bigmodel.cn/api/paas/v4/chat/completions", {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${apiKey}`,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                model: process.env.ZHIPU_AI_MODEL || "glm-4",
+                messages: [{ role: "user", content: prompt }],
+                response_format: json ? { type: "json_object" } : undefined
+            })
+        });
 
-        const model = process.env.NVIDIA_CHAT_MODEL || "qwen/qwen3.5-122b-a10b";
-
-        try {
-            const response = await fetch(invokeUrl, {
-                method: "POST",
-                headers: {
-                    Authorization: `Bearer ${apiKey}`,
-                    Accept: "application/json",
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify({
-                    model,
-                    messages: [{ role: "user", content: prompt }],
-                    max_tokens: Number(process.env.NVIDIA_CHAT_MAX_TOKENS || "4096"),
-                    temperature: Number(process.env.NVIDIA_CHAT_TEMPERATURE || "0.6"),
-                    top_p: Number(process.env.NVIDIA_CHAT_TOP_P || "0.95"),
-                    stream: false,
-                    chat_template_kwargs: {
-                        enable_thinking:
-                            (process.env.NVIDIA_CHAT_ENABLE_THINKING || "true").toLowerCase() ===
-                            "true",
-                    },
-                }),
-            });
-
-            if (response.status !== 200) {
-                console.error(
-                    "NVIDIA Chat API Error:",
-                    response.status,
-                    await response.text()
-                );
-                return false;
+        if (response.status === 200) {
+            const data = await response.json();
+            const content = data.choices[0]?.message?.content;
+            if (json) {
+                try {
+                    return JSON.parse(content);
+                } catch (e) {
+                    return content;
+                }
             }
+            return content.replaceAll('"', "");
+        }
+        return false;
+    }
 
+    private async callGroq(prompt: string, json: boolean, fetchFn: Function) {
+        const apiKey = process.env.GROQ_API_KEY;
+        if (!apiKey) return false;
+        
+        const response = await fetchFn("https://api.groq.com/openai/v1/chat/completions", {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${apiKey}`,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                messages: [{ role: "user", content: prompt }],
+                model: process.env.GROQ_MODEL || "llama-3.3-70b-versatile",
+                temperature: 0.7,
+                response_format: json ? { type: "json_object" } : undefined 
+            })
+        });
+
+        if (response.status === 200) {
+            const data = await response.json();
+            const content = data.choices[0]?.message?.content;
+            if (json) {
+                try {
+                    return JSON.parse(content);
+                } catch (e) {
+                    return content;
+                }
+            }
+            return content.replaceAll('"', "");
+        }
+        return false;
+    }
+
+    private async callNvidiaChat(prompt: string, json: boolean, fetchFn: Function) {
+        const apiKey = process.env.NVIDIA_CHAT_API_KEY || process.env.NVIDIA_API_KEY;
+        if (!apiKey) return false;
+
+        const invokeUrl = "https://integrate.api.nvidia.com/v1/chat/completions";
+        const model = process.env.NVIDIA_CHAT_MODEL || "nvidia/llama-3.1-nemotron-70b-instruct";
+
+        const response = await fetchFn(invokeUrl, {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${apiKey}`,
+                Accept: "application/json",
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                model,
+                messages: [{ role: "user", content: prompt }],
+                temperature: 0.5,
+                top_p: 0.7,
+                max_tokens: 1024,
+            }),
+        });
+
+        if (response.status === 200) {
             const data = await response.json();
             const content = data?.choices?.[0]?.message?.content;
             if (!content) return false;
@@ -199,24 +204,55 @@ class Cloudflare {
                 try {
                     return JSON.parse(content);
                 } catch (e) {
-                    console.error("Error parsing JSON from NVIDIA:", e);
                     return content;
                 }
             }
-
             return String(content).replaceAll('"', "");
-        } catch (e) {
-            console.error("NVIDIA Chat API Exception:", e);
-            return false;
         }
+        return false;
     }
 
     // Public
 
     public async generateTopic(argument: string) {
-        return await this.generateResponse(
-            `Please generate a specific video idea that takes about the following topic: ${argument}. Make it exactly one sentence. Only return the topic, nothing else.`
+        let topic = await this.generateResponse(
+            `Generate a specific video idea about: ${argument}. 
+             CRITICAL: Return ONLY the topic text. No introductions, no "Here is your topic", no quotes, no conversational filler, NO MARKDOWN. 
+             One sentence only.`
         );
+        if (topic) {
+            return this.cleanAIResponse(topic);
+        }
+        return topic;
+    }
+
+    private cleanAIResponse(text: string): string {
+        if (!text) return "";
+        
+        // 1. Remove Markdown Bold/Italic/Headers
+        let clean = text.replace(/[*_#>`]/g, "").trim();
+        
+        // 2. Remove common conversational preambles (English & Spanish)
+        const preambles = [
+            "here is", "the topic is", "i'd be delighted to", "sure", "of course", 
+            "here's", "a topic for your video is", "topic:", "el tema es", "aquí tienes", 
+            "por supuesto", "claro", "tema:", "idea:", "the idea is", "one idea is",
+            "una idea para tu video es", "genial"
+        ];
+        
+        // Regex to match preambles at the start followed by optional colon/space
+        const preambleRegex = new RegExp(`^(${preambles.join('|')})[,\\s:]+`, "i");
+        clean = clean.replace(preambleRegex, "").trim();
+        
+        // 3. Remove leading/trailing quotes
+        clean = clean.replace(/^["']|["']$/g, "").trim();
+        
+        // 4. Ensure it's not too long for a topic (limit to first sentence or 200 chars)
+        if (clean.length > 200) {
+            clean = clean.split(/[.!?]/)[0] + ".";
+        }
+        
+        return clean.trim();
     }
 
     public async generateScript(

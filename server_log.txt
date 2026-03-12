@@ -1,0 +1,16 @@
+89 | 							fetch,
+90 | 							// @ts-expect-error private property
+91 | 							error: app.outerErrorHandler
+92 | 						} as Serve)
+93 | 
+94 | 			app.server = Bun?.serve(serve)
+                          ^
+TypeError: Bun.serve expects idleTimeout to be 255 or less
+ code: "ERR_INVALID_ARG_TYPE"
+
+      at <anonymous> (C:\Users\Usuario\Documents\trae_projects\Beatriz Publisher\MoneyPrinterV5\node_modules\elysia\src\adapter\bun\index.ts:94:22)
+      at listen (C:\Users\Usuario\Documents\trae_projects\Beatriz Publisher\MoneyPrinterV5\node_modules\elysia\src\index.ts:6082:31)
+      at main (C:\Users\Usuario\Documents\trae_projects\Beatriz Publisher\MoneyPrinterV5\index.ts:4:9)
+      at C:\Users\Usuario\Documents\trae_projects\Beatriz Publisher\MoneyPrinterV5\index.ts:11:1
+      at loadAndEvaluateModule (2:1)
+

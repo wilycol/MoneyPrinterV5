@@ -310,52 +310,6 @@ const extractImageTextGroq = async (
 export const projectRoutes = new Elysia({
     prefix: "/project",
 })
-    .get("/list", async () => {
-        const videosPath = path.join(process.cwd(), "videos");
-        console.log("[DEBUG] /project/list called. Path:", videosPath);
-        try {
-            if (!(await Bun.file(videosPath).exists()) && !(await Bun.file(videosPath + "/").exists())) {
-                 console.log("[DEBUG] Videos directory does not exist (checked with Bun.file). Trying readdir anyway.");
-            }
-            const files = await readdir(videosPath, { withFileTypes: true });
-            const dirs = files
-                .filter((dirent) => dirent.isDirectory())
-                .map((dirent) => dirent.name);
-            
-            console.log("[DEBUG] Found video directories:", dirs);
-            return dirs;
-        } catch (error) {
-            console.error("[DEBUG] Error reading videos directory:", error);
-            return [];
-        }
-    })
-    .get("/songs", async () => {
-        try {
-            const songsPath = path.join(process.cwd(), "songs");
-            const files = await readdir(songsPath, { withFileTypes: true });
-            return files
-                .filter((dirent) => dirent.isFile())
-                .map((dirent) => dirent.name)
-                .filter((name) => name.toLowerCase().endsWith(".mp3") || name.toLowerCase().endsWith(".wav"));
-        } catch (error) {
-            console.error("[DEBUG] Error reading songs directory:", error);
-            return [];
-        }
-    })
-    .get("/face-clips", async () => {
-        try {
-            const facesPath = path.join(process.cwd(), "faces");
-            const files = await readdir(facesPath, { withFileTypes: true });
-            const allowedExt = new Set([".mp4", ".webm", ".mov", ".gif"]);
-            return files
-                .filter((dirent) => dirent.isFile())
-                .map((dirent) => dirent.name)
-                .filter((name) => allowedExt.has(path.extname(name).toLowerCase()));
-        } catch (error) {
-            console.error("[DEBUG] Error reading faces directory:", error);
-            return [];
-        }
-    })
     .get("/fonts", async () => {
         try {
             const fontsPath = path.join(process.cwd(), "fonts");
@@ -476,6 +430,52 @@ export const projectRoutes = new Elysia({
         }
         const audioPath = path.join(process.cwd(), "videos", "_preview", safeFile);
         return Bun.file(audioPath);
+    })
+    .get("/list-ids", async () => {
+        const videosPath = path.join(process.cwd(), "videos");
+        console.log("[DEBUG] /project/list called. Path:", videosPath);
+        try {
+            if (!(await Bun.file(videosPath).exists()) && !(await Bun.file(videosPath + "/").exists())) {
+                 console.log("[DEBUG] Videos directory does not exist (checked with Bun.file). Trying readdir anyway.");
+            }
+            const files = await readdir(videosPath, { withFileTypes: true });
+            const dirs = files
+                .filter((dirent) => dirent.isDirectory())
+                .map((dirent) => dirent.name);
+            
+            console.log("[DEBUG] Found video directories:", dirs);
+            return dirs;
+        } catch (error) {
+            console.error("[DEBUG] Error reading videos directory:", error);
+            return [];
+        }
+    })
+    .get("/songs", async () => {
+        try {
+            const songsPath = path.join(process.cwd(), "songs");
+            const files = await readdir(songsPath, { withFileTypes: true });
+            return files
+                .filter((dirent) => dirent.isFile())
+                .map((dirent) => dirent.name)
+                .filter((name) => name.toLowerCase().endsWith(".mp3") || name.toLowerCase().endsWith(".wav"));
+        } catch (error) {
+            console.error("[DEBUG] Error reading songs directory:", error);
+            return [];
+        }
+    })
+    .get("/face-clips", async () => {
+        try {
+            const facesPath = path.join(process.cwd(), "faces");
+            const files = await readdir(facesPath, { withFileTypes: true });
+            const allowedExt = new Set([".mp4", ".webm", ".mov", ".gif"]);
+            return files
+                .filter((dirent) => dirent.isFile())
+                .map((dirent) => dirent.name)
+                .filter((name) => allowedExt.has(path.extname(name).toLowerCase()));
+        } catch (error) {
+            console.error("[DEBUG] Error reading faces directory:", error);
+            return [];
+        }
     })
     .post(
         "/:id/face-clip",
@@ -609,45 +609,6 @@ export const projectRoutes = new Elysia({
         }
         
         return metadata;
-    })
-    .post("/settings/:id", async ({ params: { id }, body }) => {
-        try {
-            await updateMetadata(id, body);
-            return { success: true };
-        } catch (e) {
-            console.error("Error updating project settings:", e);
-            return new Response(JSON.stringify({ error: "Update failed", details: String(e) }), {
-                status: 500,
-                headers: { "Content-Type": "application/json" },
-            });
-        }
-    }, {
-        body: t.Partial(t.Object({
-            subtitleEnabled: t.Boolean(),
-            subtitleFont: t.String(),
-            subtitleFontSize: t.Number(),
-            subtitleColor: t.String(),
-            subtitleStrokeColor: t.String(),
-            subtitleStrokeWidth: t.Number(),
-            subtitlePosition: t.Union([
-                t.Literal("bottom"),
-                t.Literal("center"),
-                t.Literal("top"),
-                t.Literal("custom"),
-            ]),
-            subtitlePositionY: t.Number(),
-            subtitleMaxChars: t.Number(),
-            karaokeEnabled: t.Boolean(),
-            transitionDuration: t.Number(),
-            backgroundMusic: t.String(),
-            adUrl: t.String(),
-            showQr: t.Boolean(),
-            showBanner: t.Boolean(),
-            adBannerColor: t.String(),
-            faceClip: t.String(),
-            voice: t.String(),
-            voiceRate: t.Number(),
-        }))
     })
     .post(
         "/:id/kb/upload",
@@ -998,12 +959,12 @@ export const projectRoutes = new Elysia({
                 finalPrompt += `\n\nINSTRUCCIONES ADICIONALES: Utiliza la siguiente información de contexto para generar el tema o idea del video. El tema debe estar basado en este contenido si es posible.\n${context}`;
             }
 
-            const topic = await cld.generateTopic(finalPrompt);
+            const topic = await cld.generateResponse(finalPrompt);
             await updateMetadata(id, {
                 argument: argument,
-                topic: topic || "",
+                topic: topic,
             });
-            return { topic: topic || "" };
+            return topic;
         },
         {
             body: createTopic,
@@ -1045,15 +1006,13 @@ export const projectRoutes = new Elysia({
                 finalPrompt += `\n\nINSTRUCCIONES ADICIONALES: Utiliza la siguiente información de contexto para redactar el guion. El guion debe estar basado en este contenido si es posible.\n${context}`;
             }
 
-            const script = await cld.generateScript(topic, language, Number(sentences));
-            if (script) {
-                await updateMetadata(id, {
-                    script: script,
-                    language: language,
-                    sentences: Number(sentences),
-                });
-            }
-            return { script: script || "" };
+            const script = await cld.generateResponse(finalPrompt);
+            await updateMetadata(id, {
+                script: script,
+                language: language,
+                sentences: Number(sentences),
+            });
+            return script;
         },
         {
             body: createScript,
@@ -1121,8 +1080,8 @@ export const projectRoutes = new Elysia({
 
     .post(
         "/create/:id/image",
-        async ({ params: { id }, body: { prompt, videoId: bVideoId } }) => {
-            const image = await cld.generateImage(prompt, bVideoId || id);
+        async ({ params: { id }, body: { prompt, videoId } }) => {
+            const image = await cld.generateImage(prompt, videoId);
             await updateMetadata(id, {
                 // @ts-ignore
                 imagesPath: [image],
@@ -1133,29 +1092,7 @@ export const projectRoutes = new Elysia({
         {
             body: t.Object({
                 prompt: t.String(),
-                videoId: t.Optional(t.String()),
-            }),
-        }
-    )
-    .post(
-        "/create/:id/images",
-        async ({ params: { id }, body: { prompts } }) => {
-            const images: string[] = [];
-            for (const prompt of prompts) {
-                const image = await cld.generateImage(prompt, id);
-                if (image) {
-                    images.push(image);
-                    await updateMetadata(id, {
-                        // @ts-ignore
-                        imagesPath: [image],
-                    });
-                }
-            }
-            return { images };
-        },
-        {
-            body: t.Object({
-                prompts: t.Array(t.String()),
+                videoId: t.String(),
             }),
         }
     )
@@ -1273,3 +1210,4 @@ export const projectRoutes = new Elysia({
              return new Response(JSON.stringify({ error: "Delete failed", details: String(e) }), { status: 500 });
         }
     });
+
